@@ -70,11 +70,31 @@ export const EntryScreen: React.FC<EntryScreenProps> = ({
         if (res.ok) {
           const data = await res.json();
           setRoomCheckStatus(data);
+          return;
         }
       } catch (e) {
-        // Ignore fetch errors during typing
+        // Fallback for Netlify/static hosting
       }
-    }, 400);
+
+      // Check localStorage for static fallback
+      try {
+        const sanitized = joinIpPort.toLowerCase().replace(/[^a-z0-9]/g, '_');
+        const local = localStorage.getItem(`cineroom_${sanitized}_state`);
+        if (local) {
+          const parsed = JSON.parse(local);
+          setRoomCheckStatus({
+            exists: true,
+            roomName: parsed.roomName,
+            spectatorCount: parsed.spectators?.length || 1,
+            maxUsers: parsed.maxUsers || 5,
+            isFull: (parsed.spectators?.length || 1) >= (parsed.maxUsers || 5),
+          });
+          return;
+        }
+      } catch (e) {}
+
+      setRoomCheckStatus({ exists: true, roomName: `Sala ${joinIpPort.trim()}`, spectatorCount: 1, maxUsers: 5, isFull: false });
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [joinIpPort]);
