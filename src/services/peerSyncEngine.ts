@@ -65,6 +65,7 @@ class PeerSyncEngine {
     };
 
     const newRoom: CinemaRoomState = {
+      roomId: ipPort,
       ipPort,
       roomName: roomName?.trim() || `Sala Cinema ${ipPort}`,
       maxUsers: 5,
@@ -162,6 +163,7 @@ class PeerSyncEngine {
     };
 
     const room: CinemaRoomState = existingState || {
+      roomId: ipPort,
       ipPort,
       roomName: `Sala Cinema ${ipPort}`,
       maxUsers: 5,

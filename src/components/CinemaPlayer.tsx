@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { VideoState, QualityPreset, FloatingReaction, Spectator } from '../types/cinema';
+import React, { useEffect, useRef, useState } from 'react';
+import { VideoState, QualityPreset, FloatingReaction, Spectator, ChatMessage } from '../types/cinema';
 import Hls from 'hls.js';
 import {
   Play,
@@ -7,12 +7,18 @@ import {
   Volume2,
   VolumeX,
   Maximize,
-  Sparkles,
-  Zap,
   Tv,
   Film,
   Gauge,
   Radio,
+  Lock,
+  ShieldCheck,
+  X,
+  MessageSquare,
+  Moon,
+  Smartphone,
+  RotateCw,
+  Send,
 } from 'lucide-react';
 import { extractYouTubeId } from '../services/videoPresets';
 
@@ -22,25 +28,32 @@ interface CinemaPlayerProps {
   canControl: boolean;
   floatingReactions: FloatingReaction[];
   spectators: Spectator[];
+  messages: ChatMessage[];
+  isCinemaMode: boolean;
+  onToggleCinemaMode: () => void;
   onPlay: (currentTime?: number) => void;
   onPause: (currentTime?: number) => void;
   onSeek: (time: number) => void;
-  onOpenCinemaMode: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
+  onSendMessage: (text: string) => void;
+  onSendReaction: (emoji: string) => void;
 }
 
 export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   videoState,
   isAdmin,
-  canControl,
   floatingReactions,
   spectators,
+  messages,
+  isCinemaMode,
+  onToggleCinemaMode,
   onPlay,
   onPause,
   onSeek,
-  onOpenCinemaMode,
-  onChangeQuality,
+  onSendMessage,
+  onSendReaction,
 }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
 
@@ -50,9 +63,12 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isBuffering, setIsBuffering] = useState<boolean>(false);
   const [showControls, setShowControls] = useState<boolean>(true);
-  const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
   const [isTurboMode, setIsTurboMode] = useState<boolean>(false);
   const [needsUserGesture, setNeedsUserGesture] = useState<boolean>(false);
+  const [showChatInCinema, setShowChatInCinema] = useState<boolean>(false);
+  const [cinemaChatInput, setCinemaChatInput] = useState<string>('');
+  const [forceLandscape, setForceLandscape] = useState<boolean>(false);
+  const [isPortrait, setIsPortrait] = useState<boolean>(false);
 
   const controlsTimeoutRef = useRef<any>(null);
   const currentLoadedUrlRef = useRef<string>('');
@@ -68,7 +84,52 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Source loader (HTML5 / HLS)
+  // Orientation check
+  useEffect(() => {
+    const checkOrientation = () => {
+      if (typeof window !== 'undefined') {
+        setIsPortrait(window.innerHeight > window.innerWidth);
+      }
+    };
+    checkOrientation();
+    window.addEventListener('resize', checkOrientation);
+    window.addEventListener('orientationchange', checkOrientation);
+    return () => {
+      window.removeEventListener('resize', checkOrientation);
+      window.removeEventListener('orientationchange', checkOrientation);
+    };
+  }, []);
+
+  // Request fullscreen and orientation lock when Cinema Mode is activated
+  useEffect(() => {
+    if (isCinemaMode) {
+      const elem = containerRef.current || document.documentElement;
+      if (elem.requestFullscreen) {
+        elem.requestFullscreen().catch(() => {});
+      } else if ((elem as any).webkitRequestFullscreen) {
+        (elem as any).webkitRequestFullscreen();
+      }
+
+      if (typeof screen !== 'undefined' && screen.orientation && (screen.orientation as any).lock) {
+        (screen.orientation as any).lock('landscape').catch(() => {});
+      }
+
+      // Auto-hide controls in 3 seconds
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = setTimeout(() => {
+        if (!showChatInCinema) {
+          setShowControls(false);
+        }
+      }, 3000);
+    } else {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setShowControls(true);
+    }
+  }, [isCinemaMode, showChatInCinema]);
+
+  // Load Source (HTML5 or HLS) - SINGLE CONTINUOUS PLAYER INSTANCE
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !videoState.url) return;
@@ -117,7 +178,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     };
   }, [videoState.url, videoState.format, videoState.isPlaying]);
 
-  // Sync playback state
+  // Sync playback state strictly with Admin
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -191,7 +252,11 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
       return;
     }
 
-    if (!canControl) return;
+    // STRICT: Only Admin can pause / unpause
+    if (!isAdmin) {
+      return;
+    }
+
     const time = videoRef.current ? videoRef.current.currentTime : localCurrentTime;
     if (videoState.isPlaying) {
       onPause(time);
@@ -210,18 +275,28 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   };
 
   const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!canControl) return;
+    if (!isAdmin) return;
     const time = parseFloat(e.target.value);
     setLocalCurrentTime(time);
     onSeek(time);
   };
 
+  // 3-SECOND AUTO HIDE ON MOUSE / TOUCH ACTIVITY
   const handleUserActivity = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (videoState.isPlaying) setShowControls(false);
-    }, 3500);
+      if (videoState.isPlaying && !showChatInCinema) {
+        setShowControls(false);
+      }
+    }, 3000);
+  };
+
+  const handleCinemaChatSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cinemaChatInput.trim()) return;
+    onSendMessage(cinemaChatInput.trim());
+    setCinemaChatInput('');
   };
 
   const getQualityStyle = (preset: QualityPreset): React.CSSProperties => {
@@ -257,19 +332,46 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
 
   const isYouTube = videoState.format === 'youtube' || videoState.url.includes('youtube.com') || videoState.url.includes('youtu.be');
   const youtubeId = isYouTube ? extractYouTubeId(videoState.url) : null;
+  const reactionEmojis = ['🍿', '👏', '🔥', '😂', '😱', '❤️', '🍻', '🎬'];
 
   return (
     <div
+      ref={containerRef}
       onMouseMove={handleUserActivity}
       onTouchStart={handleUserActivity}
-      className="relative w-full rounded-2xl md:rounded-3xl overflow-hidden bg-black shadow-2xl border border-blue-900/40 group select-none"
+      className={`group select-none overflow-hidden transition-all duration-300 ${
+        isCinemaMode
+          ? `fixed inset-0 z-[9999] w-screen h-screen bg-black flex flex-col justify-between ${
+              forceLandscape
+                ? 'origin-center rotate-90 w-[100vh] h-[100vw] absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2'
+                : ''
+            }`
+          : 'relative w-full rounded-2xl md:rounded-3xl bg-black shadow-2xl border border-blue-900/40'
+      }`}
     >
       {/* Blue Gradient Ambilight Glow */}
       <div className="absolute -inset-1 pointer-events-none transition-opacity duration-500 blur-2xl opacity-45 bg-gradient-to-tr from-blue-600/30 via-indigo-600/25 to-cyan-500/25 z-0" />
 
-      {/* Top Header Overlay */}
+      {/* Mobile Landscape Alert in Cinema Mode */}
+      {isCinemaMode && isPortrait && !forceLandscape && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-blue-600 to-indigo-600 border border-cyan-400/40 text-white px-4 py-2 rounded-2xl shadow-2xl backdrop-blur-md flex items-center gap-3 animate-bounce">
+          <Smartphone className="w-5 h-5 rotate-90 animate-pulse text-cyan-300" />
+          <div className="text-xs">
+            <p className="font-bold">Gire o celular para Modo Paisagem!</p>
+            <p className="text-[10px] text-cyan-100">Ou force o giro 90° abaixo</p>
+          </div>
+          <button
+            onClick={() => setForceLandscape(true)}
+            className="px-2 py-1 bg-white text-blue-800 rounded-lg font-bold text-[10px] uppercase shadow"
+          >
+            Girar 90°
+          </button>
+        </div>
+      )}
+
+      {/* TOP HEADER CONTROLS (Auto-hides in 3s on Cinema Mode) */}
       <div
-        className={`absolute top-0 left-0 right-0 z-30 p-3 sm:p-4 bg-gradient-to-b from-black/95 via-black/60 to-transparent transition-opacity duration-300 flex items-center justify-between gap-2 ${
+        className={`absolute top-0 left-0 right-0 z-30 p-3 sm:p-5 bg-gradient-to-b from-black/95 via-black/60 to-transparent transition-opacity duration-500 flex items-center justify-between gap-2 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
@@ -295,6 +397,39 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
 
         {/* Quality & Cinema Mode Actions */}
         <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+          {isCinemaMode && (
+            <>
+              {/* Rotate toggle in cinema mode */}
+              <button
+                onClick={() => setForceLandscape((prev) => !prev)}
+                className={`p-2 rounded-xl border text-xs transition-all ${
+                  forceLandscape
+                    ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-300'
+                    : 'bg-slate-900/80 border-slate-700 text-slate-300'
+                }`}
+                title="Girar Tela 90°"
+              >
+                <RotateCw className="w-4 h-4" />
+              </button>
+
+              {/* Chat toggle in cinema mode */}
+              <button
+                onClick={() => setShowChatInCinema((prev) => !prev)}
+                className={`relative p-2 rounded-xl border text-xs transition-all ${
+                  showChatInCinema
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 border-cyan-400 text-white'
+                    : 'bg-slate-900/80 border-slate-700 text-slate-300'
+                }`}
+                title="Chat"
+              >
+                <MessageSquare className="w-4 h-4" />
+                {messages.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-cyan-400" />
+                )}
+              </button>
+            </>
+          )}
+
           {/* Turbo Smooth Toggle */}
           <button
             onClick={() => setIsTurboMode((prev) => !prev)}
@@ -303,20 +438,24 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
                 ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
                 : 'bg-slate-900/80 border-slate-700 text-slate-400 hover:text-white'
             }`}
-            title="Modo Turbo: Máxima Fluidez 60FPS"
+            title="Modo Turbo: 60FPS"
           >
             <Gauge className="w-3.5 h-3.5 text-cyan-400" />
             <span>TURBO 60FPS</span>
           </button>
 
-          {/* BOTÃO DE CINEMA (Blue Gradient) */}
+          {/* BOTÃO DE CINEMA TOGGLE */}
           <button
-            onClick={onOpenCinemaMode}
-            className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black shadow-lg shadow-blue-950 transition-all transform active:scale-95 border border-cyan-400/40"
-            title="Preencher tela e ativar Modo Cinema"
+            onClick={onToggleCinemaMode}
+            className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl text-xs font-black transition-all transform active:scale-95 border ${
+              isCinemaMode
+                ? 'bg-slate-900/90 hover:bg-slate-800 text-cyan-300 border-cyan-500/50 shadow-lg'
+                : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white shadow-lg shadow-blue-950 border-cyan-400/40'
+            }`}
+            title={isCinemaMode ? 'Sair do Modo Cinema' : 'Ativar Modo Cinema Tela Cheia'}
           >
-            <Tv className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            <span className="tracking-wide font-sans">MODO CINEMA</span>
+            {isCinemaMode ? <X className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-300" /> : <Tv className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+            <span className="tracking-wide font-sans">{isCinemaMode ? 'SAIR DO CINEMA' : 'MODO CINEMA'}</span>
           </button>
         </div>
       </div>
@@ -326,7 +465,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
         {floatingReactions.map((rx) => (
           <div
             key={rx.id}
-            className="absolute bottom-16 flex flex-col items-center animate-cinema-float"
+            className="absolute bottom-20 flex flex-col items-center animate-cinema-float"
             style={{ left: `${rx.x}%` }}
           >
             <span className="text-3xl sm:text-5xl filter drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)]">
@@ -339,8 +478,12 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
         ))}
       </div>
 
-      {/* Video Viewport */}
-      <div className="relative aspect-video w-full flex items-center justify-center bg-black z-10">
+      {/* VIDEO VIEWPORT (STRETCHES BEAUTIFULLY IN CINEMA MODE) */}
+      <div
+        className={`relative flex items-center justify-center bg-black z-10 ${
+          isCinemaMode ? 'w-full h-full flex-1' : 'w-full aspect-video'
+        }`}
+      >
         {isYouTube && youtubeId ? (
           <iframe
             src={`https://www.youtube.com/embed/${youtubeId}?autoplay=${
@@ -360,24 +503,79 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             crossOrigin="anonymous"
             onClick={handleTogglePlay}
             style={getQualityStyle(videoState.qualityPreset)}
-            className="w-full h-full object-contain cursor-pointer transition-all duration-200"
+            className={`w-full h-full object-contain transition-all duration-200 ${
+              isAdmin ? 'cursor-pointer' : 'cursor-default'
+            }`}
           />
         )}
 
-        {/* Autoplay blocked resolver banner */}
+        {/* Floating Chat Drawer in Cinema Mode */}
+        {isCinemaMode && showChatInCinema && (
+          <div className="absolute right-4 top-16 bottom-24 w-80 max-w-[85vw] bg-slate-950/95 border border-blue-900/60 rounded-2xl p-3 flex flex-col shadow-2xl backdrop-blur-xl z-50 animate-fadeIn">
+            <div className="flex items-center justify-between pb-2 mb-2 border-b border-blue-950">
+              <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                <MessageSquare className="w-3.5 h-3.5" />
+                Chat da Sala ({spectators.length}/5)
+              </span>
+              <button
+                onClick={() => setShowChatInCinema(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 text-xs">
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`p-2 rounded-xl text-xs ${
+                    m.isSystem
+                      ? 'bg-blue-950/40 border border-blue-500/20 text-cyan-200'
+                      : 'bg-slate-900 border border-blue-950 text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1 font-bold text-cyan-400 text-[11px] mb-0.5">
+                    <span>{m.avatar}</span>
+                    <span>{m.userName}</span>
+                  </div>
+                  <p className="break-words">{m.text}</p>
+                </div>
+              ))}
+            </div>
+
+            <form onSubmit={handleCinemaChatSubmit} className="mt-2 pt-2 border-t border-blue-950 flex gap-1.5">
+              <input
+                type="text"
+                value={cinemaChatInput}
+                onChange={(e) => setCinemaChatInput(e.target.value)}
+                placeholder="Mensagem..."
+                className="flex-1 bg-slate-900 border border-blue-900/80 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-xl text-xs font-bold"
+              >
+                <Send className="w-3 h-3" />
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Autoplay unblock button */}
         {needsUserGesture && (
           <div
             onClick={handleUserTapToSync}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm z-30 cursor-pointer p-4 text-center animate-fadeIn"
+            className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-sm z-30 cursor-pointer p-4 text-center animate-fadeIn"
           >
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white text-2xl shadow-xl shadow-blue-950/80 mb-3 animate-bounce">
               <Play className="w-8 h-8 fill-current ml-1" />
             </div>
             <h3 className="text-sm sm:text-base font-black text-white">
-              O Host iniciou o filme!
+              O Admin iniciou a transmissão!
             </h3>
             <p className="text-xs text-cyan-300 mt-1">
-              Toque aqui para desmutar e sincronizar em Ultra Qualidade
+              Toque aqui para desmutar e assistir em Ultra Qualidade
             </p>
           </div>
         )}
@@ -392,25 +590,34 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
           </div>
         )}
 
-        {/* Center Play Button when paused */}
-        {!videoState.isPlaying && !isYouTube && !needsUserGesture && (
+        {/* Center Play Button for Admin when paused */}
+        {!videoState.isPlaying && !isYouTube && !needsUserGesture && isAdmin && (
           <button
             onClick={handleTogglePlay}
-            disabled={!canControl}
             className="absolute inset-0 m-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 text-white flex items-center justify-center shadow-2xl shadow-blue-950 border-2 border-white/50 transition-transform transform hover:scale-110 active:scale-95 z-20"
           >
             <Play className="w-8 h-8 sm:w-9 sm:h-9 fill-current ml-1" />
           </button>
         )}
+
+        {/* Guest info badge when paused by Admin */}
+        {!videoState.isPlaying && !isAdmin && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-20">
+            <div className="px-4 py-2 rounded-2xl bg-slate-950/80 border border-blue-900/60 backdrop-blur-md flex items-center gap-2 text-cyan-300 text-xs font-bold shadow-xl">
+              <Lock className="w-4 h-4 text-cyan-400" />
+              <span>Filme pausado pelo Administrador</span>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Bottom Controls Bar (Blue Gradient Style) */}
+      {/* BOTTOM CONTROLS BAR (Auto-hides completely in 3s on Cinema Mode) */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-30 p-2.5 sm:p-4 bg-gradient-to-t from-black via-black/85 to-transparent transition-opacity duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-30 p-2.5 sm:p-5 bg-gradient-to-t from-black via-black/85 to-transparent transition-opacity duration-500 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        {/* Progress Bar with Blue Gradient */}
+        {/* Progress Bar */}
         <div className="relative mb-2 sm:mb-3 flex items-center group/bar">
           <input
             type="range"
@@ -419,8 +626,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             step={0.1}
             value={localCurrentTime}
             onChange={handleSeekChange}
-            disabled={!canControl}
-            className="w-full h-2 sm:h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
+            disabled={!isAdmin}
+            className={`w-full h-2 sm:h-1.5 bg-slate-800 rounded-lg appearance-none accent-cyan-400 focus:outline-none ${
+              isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
+            }`}
           />
           <div
             className="absolute top-0 left-0 h-2 sm:h-1.5 rounded-lg bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400 pointer-events-none"
@@ -428,22 +637,26 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
           />
         </div>
 
-        {/* Controls Row */}
+        {/* Controls and Reactions Row */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 sm:gap-3">
             {/* Play/Pause */}
-            <button
-              onClick={handleTogglePlay}
-              disabled={!canControl}
-              className={`p-2 rounded-xl text-white transition-all ${
-                canControl
-                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md shadow-blue-950'
-                  : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-              }`}
-              title={canControl ? (videoState.isPlaying ? 'Pausar' : 'Reproduzir') : 'Apenas o Host pode controlar'}
-            >
-              {videoState.isPlaying ? <Pause className="w-4 h-4 sm:w-5 sm:h-5" /> : <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />}
-            </button>
+            {isAdmin ? (
+              <button
+                onClick={handleTogglePlay}
+                className="p-2 rounded-xl text-white transition-all bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md shadow-blue-950"
+                title={videoState.isPlaying ? 'Pausar Filme' : 'Iniciar Filme'}
+              >
+                {videoState.isPlaying ? <Pause className="w-4 h-4 sm:w-5 sm:h-5" /> : <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />}
+              </button>
+            ) : (
+              <div
+                className="p-2 rounded-xl bg-slate-900 border border-blue-950 text-slate-500 flex items-center justify-center"
+                title="Controle exclusivo do Administrador"
+              >
+                <Lock className="w-4 h-4 text-cyan-400" />
+              </div>
+            )}
 
             {/* Timestamps */}
             <div className="text-[11px] sm:text-xs font-mono text-slate-300">
@@ -489,20 +702,44 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             </div>
           </div>
 
+          {/* Center Reactions (Available in Cinema Mode too!) */}
+          {isCinemaMode && (
+            <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-blue-900/60 backdrop-blur-md">
+              {reactionEmojis.slice(0, 5).map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => onSendReaction(emoji)}
+                  className="hover:scale-125 transition-transform p-1 text-base active:scale-90"
+                  title={`Reagir ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Right Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {!canControl && (
-              <span className="text-[10px] font-medium text-cyan-300/90 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20 hidden sm:inline">
-                Sincronizado com o Host
-              </span>
+            {!isCinemaMode && (
+              isAdmin ? (
+                <span className="text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20 flex items-center gap-1 hidden sm:flex">
+                  <ShieldCheck className="w-3 h-3 text-cyan-400" />
+                  Host
+                </span>
+              ) : (
+                <span className="text-[10px] font-medium text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-blue-950 flex items-center gap-1 hidden sm:flex">
+                  <Lock className="w-3 h-3 text-cyan-400" />
+                  Admin
+                </span>
+              )
             )}
 
             <button
-              onClick={onOpenCinemaMode}
+              onClick={onToggleCinemaMode}
               className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white transition-all"
-              title="Modo Cinema Tela Cheia"
+              title={isCinemaMode ? 'Sair do Modo Cinema' : 'Modo Cinema Tela Cheia'}
             >
-              <Maximize className="w-4 h-4" />
+              {isCinemaMode ? <X className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
             </button>
           </div>
         </div>

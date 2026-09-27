@@ -12,8 +12,8 @@ interface UseCinemaSocketReturn {
   toastMessage: { text: string; level: 'info' | 'warning' | 'success' } | null;
   floatingReactions: FloatingReaction[];
   pingMs: number;
-  joinRoom: (ipPort: string, password: string, userName?: string, avatar?: string) => void;
-  createRoom: (ipPort: string, password: string, roomName?: string, userName?: string, avatar?: string) => void;
+  joinRoom: (roomId: string, password?: string, userName?: string, avatar?: string) => void;
+  createRoom: (roomId: string, password?: string, roomName?: string, userName?: string, avatar?: string) => void;
   playMedia: (currentTime?: number) => void;
   pauseMedia: (currentTime?: number) => void;
   seekMedia: (time: number) => void;
@@ -66,11 +66,13 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
           universalSync.publish('SYNC_PULSE', {
             videoState: currentRoomStateRef.current.videoState,
             announcement: currentRoomStateRef.current.announcement,
-            adminOnlyControl: currentRoomStateRef.current.adminOnlyControl,
+            adminOnlyControl: true,
             roomName: currentRoomStateRef.current.roomName,
+            adminId: currentRoomStateRef.current.adminId,
+            adminName: currentRoomStateRef.current.adminName,
           });
         }
-      }, 2500);
+      }, 2000);
     } else {
       if (hostPulseTimerRef.current) clearInterval(hostPulseTimerRef.current);
     }
@@ -100,7 +102,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
           if (!exists) {
             if (prev.spectators.length >= prev.maxUsers) {
               if (user.id === currentUserRef.current?.id) {
-                setError(`Sala Cheia! Limite máximo de ${prev.maxUsers} pessoas atingido.`);
+                setError(`Sala Cheia! Limite de ${prev.maxUsers} pessoas atingido.`);
               }
               return prev;
             }
@@ -174,14 +176,14 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       }
 
       case 'SYNC_PULSE': {
-        // Periodic sync pulse from host
+        // Enforce Host authority on regular spectators
         if (!currentUserRef.current?.isAdmin && payload.videoState) {
           setRoomState((prev) => {
             if (!prev) return null;
-            // If movie URL is different, update immediately!
-            const urlChanged = prev.videoState.url !== payload.videoState.url;
             return {
               ...prev,
+              adminId: payload.adminId || prev.adminId,
+              adminName: payload.adminName || prev.adminName,
               videoState: {
                 ...prev.videoState,
                 url: payload.videoState.url,
@@ -193,7 +195,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
                 format: payload.videoState.format,
               },
               announcement: payload.announcement ?? prev.announcement,
-              adminOnlyControl: payload.adminOnlyControl ?? prev.adminOnlyControl,
+              adminOnlyControl: true,
             };
           });
         }
@@ -260,7 +262,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             messages: payload.message ? [...prev.messages, payload.message] : prev.messages,
           };
         });
-        showToast(`Novo filme carregado: ${payload.videoState.title}`, 'info');
+        showToast(`Novo filme carregado pelo Admin: ${payload.videoState.title}`, 'info');
         break;
       }
 
@@ -275,7 +277,6 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             },
           };
         });
-        showToast(`Modo Ultra 4K: ${payload.qualityPreset.toUpperCase()}`, 'info');
         break;
       }
 
@@ -329,12 +330,6 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         const { action, targetUserId, value } = payload;
         if (action === 'set_announcement') {
           setRoomState((prev) => (prev ? { ...prev, announcement: value } : null));
-        } else if (action === 'toggle_admin_control') {
-          setRoomState((prev) => (prev ? { ...prev, adminOnlyControl: value } : null));
-          showToast(
-            value ? 'Controle exclusivo do Host ativado' : 'Controles liberados para todos os espectadores',
-            'info'
-          );
         } else if (action === 'transfer_admin' && targetUserId) {
           setRoomState((prev) => {
             if (!prev) return null;
@@ -342,7 +337,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             return {
               ...prev,
               adminId: targetUserId,
-              adminName: target?.name || 'Host',
+              adminName: target?.name || 'Admin',
               spectators: prev.spectators.map((s) => ({
                 ...s,
                 isAdmin: s.id === targetUserId,
@@ -400,13 +395,14 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
   }, []);
 
   const createRoom = useCallback(
-    (ipPort: string, password: string, roomName?: string, userName?: string, avatar?: string) => {
+    (roomId: string, password?: string, roomName?: string, userName?: string, avatar?: string) => {
       setError(null);
       setIsConnecting(true);
 
+      const cleanRoomId = roomId.trim().toUpperCase();
       const hostUser: Spectator = {
         id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        name: userName?.trim() || 'Host Cineasta',
+        name: userName?.trim() || 'Admin Cineasta',
         avatar: avatar || '🎬',
         seatIndex: 0,
         isAdmin: true,
@@ -416,8 +412,9 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       };
 
       const initialRoom: CinemaRoomState = {
-        ipPort,
-        roomName: roomName?.trim() || `Sala Cinema ${ipPort}`,
+        roomId: cleanRoomId,
+        ipPort: cleanRoomId,
+        roomName: roomName?.trim() || `Sala VIP ${cleanRoomId}`,
         maxUsers: 5,
         adminId: hostUser.id,
         adminName: hostUser.name,
@@ -439,7 +436,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             userId: 'system',
             userName: 'Cinema',
             avatar: '🎬',
-            text: `Sala de Cinema criada por ${hostUser.name}! (1/5 Poltronas ocupadas)`,
+            text: `Sala criada por ${hostUser.name}! Você tem o controle exclusivo do filme.`,
             timestamp: Date.now(),
             isSystem: true,
           },
@@ -453,11 +450,11 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       setRoomState(initialRoom);
 
       try {
-        const sanitized = universalSync.sanitizeRoomId(ipPort);
-        localStorage.setItem(`cineroom_${sanitized}_pwd`, password);
+        const sanitized = universalSync.sanitizeRoomId(cleanRoomId);
+        if (password) localStorage.setItem(`cineroom_${sanitized}_pwd`, password);
       } catch (e) {}
 
-      universalSync.connect(ipPort, hostUser, () => {
+      universalSync.connect(cleanRoomId, hostUser, () => {
         setIsConnecting(false);
         setIsConnected(true);
         cinemaAudio.playCinemaChime();
@@ -468,16 +465,17 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
   );
 
   const joinRoom = useCallback(
-    (ipPort: string, password: string, userName?: string, avatar?: string) => {
+    (roomId: string, password?: string, userName?: string, avatar?: string) => {
       setError(null);
       setIsConnecting(true);
 
-      const sanitized = universalSync.sanitizeRoomId(ipPort);
+      const cleanRoomId = roomId.trim().toUpperCase();
+      const sanitized = universalSync.sanitizeRoomId(cleanRoomId);
       const savedPwd = localStorage.getItem(`cineroom_${sanitized}_pwd`);
-      if (savedPwd && savedPwd !== password) {
+      if (savedPwd && password && savedPwd !== password) {
         setIsConnecting(false);
-        setError('Senha da porta incorreta! Verifique os dados digitados.');
-        showToast('Senha da porta incorreta!', 'warning');
+        setError('Senha da sala incorreta!');
+        showToast('Senha da sala incorreta!', 'warning');
         return;
       }
 
@@ -493,8 +491,9 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       };
 
       const fallbackRoom: CinemaRoomState = {
-        ipPort,
-        roomName: `Sala Cinema ${ipPort}`,
+        roomId: cleanRoomId,
+        ipPort: cleanRoomId,
+        roomName: `Sala VIP ${cleanRoomId}`,
         maxUsers: 5,
         adminId: '',
         adminName: 'Admin',
@@ -519,7 +518,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       setCurrentUser(guestUser);
       setRoomState(fallbackRoom);
 
-      universalSync.connect(ipPort, guestUser, () => {
+      universalSync.connect(cleanRoomId, guestUser, () => {
         setIsConnecting(false);
         setIsConnected(true);
         cinemaAudio.playCinemaChime();
@@ -529,39 +528,60 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
     [showToast]
   );
 
+  // STRICT ADMIN CONTROLS: Only Admin can Play, Pause, Seek, or Change Media!
   const playMedia = useCallback(
     (currentTime?: number) => {
+      if (!currentUserRef.current?.isAdmin) {
+        showToast('Apenas o Administrador pode pausar ou despausar o filme.', 'warning');
+        return;
+      }
+
       const now = Date.now();
       const time = currentTime ?? (currentRoomStateRef.current?.videoState.currentTime || 0);
 
       setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: true, currentTime: time, updatedAt: now } } : null));
       universalSync.publish('MEDIA_PLAYED', { currentTime: time, updatedAt: now });
     },
-    []
+    [showToast]
   );
 
   const pauseMedia = useCallback(
     (currentTime?: number) => {
+      if (!currentUserRef.current?.isAdmin) {
+        showToast('Apenas o Administrador pode pausar o filme.', 'warning');
+        return;
+      }
+
       const now = Date.now();
       const time = currentTime ?? (currentRoomStateRef.current?.videoState.currentTime || 0);
 
       setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: false, currentTime: time, updatedAt: now } } : null));
       universalSync.publish('MEDIA_PAUSED', { currentTime: time, updatedAt: now });
     },
-    []
+    [showToast]
   );
 
   const seekMedia = useCallback(
     (time: number) => {
+      if (!currentUserRef.current?.isAdmin) {
+        showToast('Apenas o Administrador pode avançar ou voltar o filme.', 'warning');
+        return;
+      }
+
       const now = Date.now();
       setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, currentTime: time, updatedAt: now } } : null));
       universalSync.publish('MEDIA_SEEKED', { currentTime: time, updatedAt: now, isPlaying: currentRoomStateRef.current?.videoState.isPlaying });
     },
-    []
+    [showToast]
   );
 
   const changeMedia = useCallback(
     (url: string, title?: string, duration?: number) => {
+      if (!currentUserRef.current?.isAdmin) {
+        showToast('Apenas o Administrador pode trocar o filme.', 'warning');
+        return;
+      }
+
       const cleanUrl = url.trim();
       const newVideoState: VideoState = {
         url: cleanUrl,
@@ -580,7 +600,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         userId: 'system',
         userName: 'Cinema',
         avatar: '🎬',
-        text: `Novo vídeo carregado por ${currentUserRef.current?.name || 'Admin'}: "${newVideoState.title}"`,
+        text: `Novo filme transmitido pelo Admin: "${newVideoState.title}"`,
         timestamp: Date.now(),
         isSystem: true,
       };
@@ -588,7 +608,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       setRoomState((prev) => (prev ? { ...prev, videoState: newVideoState, messages: [...prev.messages, sysMsg] } : null));
       universalSync.publish('MEDIA_CHANGED', { videoState: newVideoState, message: sysMsg });
     },
-    []
+    [showToast]
   );
 
   const changeQuality = useCallback(
@@ -629,14 +649,17 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
 
   const adminAction = useCallback(
     (action: 'kick' | 'transfer_admin' | 'set_announcement' | 'toggle_admin_control', targetUserId?: string, value?: any) => {
+      if (!currentUserRef.current?.isAdmin) {
+        showToast('Permissão negada. Apenas o Administrador pode realizar ações administrativas.', 'warning');
+        return;
+      }
+
       if (action === 'set_announcement') {
         setRoomState((prev) => (prev ? { ...prev, announcement: value } : null));
-      } else if (action === 'toggle_admin_control') {
-        setRoomState((prev) => (prev ? { ...prev, adminOnlyControl: value } : null));
       }
       universalSync.publish('ADMIN_ACTION', { action, targetUserId, value });
     },
-    []
+    [showToast]
   );
 
   const leaveRoom = useCallback(() => {

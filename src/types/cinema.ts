@@ -40,7 +40,8 @@ export interface ChatMessage {
 }
 
 export interface CinemaRoomState {
-  ipPort: string;
+  roomId: string;
+  ipPort: string; // alias
   roomName: string;
   maxUsers: number;
   adminId: string;
