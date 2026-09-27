@@ -4,7 +4,7 @@ export interface VideoPreset {
   category: 'Cinema 4K' | 'Trailer Sci-Fi' | 'Animação 4K' | 'Natureza & Relax' | 'Cyberpunk' | 'Transmissão Ao Vivo (HLS)';
   url: string;
   thumbnail: string;
-  duration: number; // in seconds
+  duration: number;
   format: 'html5' | 'hls' | 'youtube';
   qualityTag: '4K Ultra HD' | '1080p 60FPS' | 'HDR Cinema' | 'Dolby Vision Demo';
   description: string;
@@ -56,28 +56,6 @@ export const VIDEO_PRESETS: VideoPreset[] = [
     description: 'Obra cinematográfica premiada com detalhes em pele, escamas de dragão e partículas de neve.',
   },
   {
-    id: 'for-bigger-blazes',
-    title: 'For Bigger Blazes (Action 4K Demo)',
-    category: 'Cinema 4K',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    thumbnail: 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?auto=format&fit=crop&w=600&q=80',
-    duration: 15,
-    format: 'html5',
-    qualityTag: 'Dolby Vision Demo',
-    description: 'Teste rápido de alto contraste para calibração de painéis OLED e telas Ultra 4K.',
-  },
-  {
-    id: 'we-are-going-on-bullrun',
-    title: 'Bullrun Supercars (1080p 60FPS Nitro)',
-    category: 'Cyberpunk',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4',
-    thumbnail: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=600&q=80',
-    duration: 47,
-    format: 'html5',
-    qualityTag: '1080p 60FPS',
-    description: 'Supercarros em alta velocidade em estradas sinuosas com áudio espacial.',
-  },
-  {
     id: 'hls-bbb-test',
     title: 'Transmissão Adaptativa HLS Live Stream',
     category: 'Transmissão Ao Vivo (HLS)',
@@ -91,13 +69,22 @@ export const VIDEO_PRESETS: VideoPreset[] = [
 ];
 
 export function detectMediaFormat(url: string): 'html5' | 'hls' | 'youtube' {
+  if (!url) return 'html5';
   const clean = url.trim().toLowerCase();
   if (clean.includes('.m3u8')) return 'hls';
-  if (clean.includes('youtube.com') || clean.includes('youtu.be')) return 'youtube';
+  // GoogleVideo / direct CDN links should always be HTML5 direct video
+  if (clean.includes('googlevideo.com') || clean.includes('videoplayback') || clean.startsWith('blob:')) {
+    return 'html5';
+  }
+  // Standard YouTube watch/embed URLs
+  if (clean.includes('youtube.com/watch') || clean.includes('youtu.be/') || clean.includes('youtube.com/embed/')) {
+    return 'youtube';
+  }
   return 'html5';
 }
 
 export function extractYouTubeId(url: string): string | null {
+  if (!url || url.includes('googlevideo.com') || url.includes('videoplayback')) return null;
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
   return match ? match[1] : null;
 }

@@ -500,7 +500,6 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             playsInline
             webkit-playsinline="true"
             preload="auto"
-            crossOrigin="anonymous"
             onClick={handleTogglePlay}
             style={getQualityStyle(videoState.qualityPreset)}
             className={`w-full h-full object-contain transition-all duration-200 ${

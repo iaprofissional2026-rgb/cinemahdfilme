@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { CinemaRoomState, Spectator, QualityPreset } from '../types/cinema';
 import { VIDEO_PRESETS, VideoPreset } from '../services/videoPresets';
 import {
@@ -15,6 +15,9 @@ import {
   Tv,
   Hash,
   ShieldCheck,
+  FolderOpen,
+  Clipboard,
+  Upload,
 } from 'lucide-react';
 
 interface ControlPanelProps {
@@ -44,6 +47,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [copied, setCopied] = useState(false);
   const [announcementText, setAnnouncementText] = useState(roomState.announcement || '');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleMediaSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,6 +59,35 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   const handleLoadPreset = (preset: VideoPreset) => {
     onChangeMedia(preset.url, preset.title, preset.duration);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const localBlobUrl = URL.createObjectURL(file);
+    const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
+
+    // Temp video to determine file duration
+    const tempVideo = document.createElement('video');
+    tempVideo.preload = 'metadata';
+    tempVideo.src = localBlobUrl;
+    tempVideo.onloadedmetadata = () => {
+      const dur = tempVideo.duration || 0;
+      onChangeMedia(localBlobUrl, cleanTitle, dur);
+    };
+    tempVideo.onerror = () => {
+      onChangeMedia(localBlobUrl, cleanTitle, 0);
+    };
+  };
+
+  const handlePasteClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setVideoUrl(text.trim());
+      }
+    } catch (e) {}
   };
 
   const handleCopyInvite = () => {
@@ -113,7 +146,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     {isAdmin && <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-cyan-400 text-slate-950">HOST</span>}
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    O Host tem controle exclusivo de pausar, despausar e trocar o filme para todos os 5 espectadores
+                    Insira link direto (GoogleVideo, MP4, MKV, WebM, HLS m3u8) ou envie arquivo do seu computador
                   </p>
                 </div>
               </div>
@@ -128,47 +161,87 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             </div>
 
             {isAdmin ? (
-              <form onSubmit={handleMediaSubmit} className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="md:col-span-2 relative">
-                    <input
-                      type="url"
-                      value={videoUrl}
-                      onChange={(e) => setVideoUrl(e.target.value)}
-                      placeholder="Cole o link do vídeo ou filme (ex: https://.../filme.mp4)"
-                      required
-                      className="w-full bg-slate-950/90 border border-blue-900/60 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-mono transition-all"
-                    />
+              <div className="space-y-4">
+                <form onSubmit={handleMediaSubmit} className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2 relative">
+                      <input
+                        type="text"
+                        value={videoUrl}
+                        onChange={(e) => setVideoUrl(e.target.value)}
+                        placeholder="Cole qualquer link de vídeo (ex: https://...googlevideo.com/... ou https://.../filme.mp4)"
+                        required
+                        className="w-full bg-slate-950/90 border border-blue-900/60 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-mono transition-all pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={handlePasteClipboard}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-cyan-300 rounded-lg hover:bg-slate-800"
+                        title="Colar da área de transferência"
+                      >
+                        <Clipboard className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        value={videoTitle}
+                        onChange={(e) => setVideoTitle(e.target.value)}
+                        placeholder="Título do Filme (opcional)"
+                        className="w-full bg-slate-950/90 border border-blue-900/60 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 transition-all"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <input
-                      type="text"
-                      value={videoTitle}
-                      onChange={(e) => setVideoTitle(e.target.value)}
-                      placeholder="Título do Filme (opcional)"
-                      className="w-full bg-slate-950/90 border border-blue-900/60 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 transition-all"
-                    />
-                  </div>
-                </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-400">Formatos:</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">MP4 4K</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">HLS .m3u8</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">YouTube</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">WebM</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] text-slate-400">Suporta:</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">GoogleVideo CDN</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">MP4 / MKV / WebM</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">HLS .m3u8</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 border border-blue-900 text-cyan-300">YouTube</span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black shadow-lg shadow-blue-950 transition-all active:scale-95 border border-cyan-400/30"
+                    >
+                      <Sparkles className="w-4 h-4 text-cyan-300" />
+                      <span>Transmitir Vídeo / Link</span>
+                    </button>
                   </div>
+                </form>
+
+                {/* Local Notebook/PC File Selector */}
+                <div className="pt-3 border-t border-blue-950 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-950/60 p-3 rounded-xl border border-blue-900/30">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                      <FolderOpen className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-200">Transmitir Arquivo do Notebook / Celular</p>
+                      <p className="text-[10px] text-slate-400">Escolha qualquer vídeo direto do seu HD / armazenamento (MP4, MKV, WebM, MOV)</p>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
 
                   <button
-                    type="submit"
-                    className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black shadow-lg shadow-blue-950 transition-all active:scale-95 border border-cyan-400/30"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-blue-900/50 border border-cyan-500/40 text-cyan-300 hover:text-white text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap shadow"
                   >
-                    <Sparkles className="w-4 h-4 text-cyan-300" />
-                    <span>Transmitir em Ultra Qualidade</span>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Escolher Arquivo do PC</span>
                   </button>
                 </div>
-              </form>
+              </div>
             ) : (
               <div className="bg-slate-950/70 border border-blue-950 rounded-xl p-4 text-center">
                 <Shield className="w-8 h-8 text-blue-400 mx-auto mb-2 opacity-60" />

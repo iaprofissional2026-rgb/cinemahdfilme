@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { CinemaRoomState, Spectator, ChatMessage, FloatingReaction, QualityPreset, VideoState } from '../types/cinema';
 import { cinemaAudio } from '../services/soundEffects';
 import { universalSync, SyncPacket } from '../services/universalSyncEngine';
+import { detectMediaFormat } from '../services/videoPresets';
 
 interface UseCinemaSocketReturn {
   isConnected: boolean;
@@ -592,7 +593,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         playbackRate: 1.0,
         duration: duration || 0,
         qualityPreset: currentRoomStateRef.current?.videoState.qualityPreset || 'ultra_4k',
-        format: (cleanUrl.includes('.m3u8') ? 'hls' : cleanUrl.includes('youtube.com') || cleanUrl.includes('youtu.be') ? 'youtube' : 'html5'),
+        format: detectMediaFormat(cleanUrl),
       };
 
       const sysMsg: ChatMessage = {
