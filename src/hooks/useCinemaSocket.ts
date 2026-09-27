@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { CinemaRoomState, Spectator, ChatMessage, FloatingReaction, QualityPreset } from '../types/cinema';
+import { CinemaRoomState, Spectator, ChatMessage, FloatingReaction, QualityPreset, VideoState } from '../types/cinema';
 import { cinemaAudio } from '../services/soundEffects';
-import { peerSync, SyncMessage } from '../services/peerSyncEngine';
+import { universalSync, SyncPacket } from '../services/universalSyncEngine';
 
 interface UseCinemaSocketReturn {
   isConnected: boolean;
   isConnecting: boolean;
-  isP2PMode: boolean;
   currentUser: Spectator | null;
   roomState: CinemaRoomState | null;
   error: string | null;
@@ -28,71 +27,130 @@ interface UseCinemaSocketReturn {
 }
 
 export function useCinemaSocket(): UseCinemaSocketReturn {
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isP2PMode, setIsP2PMode] = useState(false);
   const [currentUser, setCurrentUser] = useState<Spectator | null>(null);
   const [roomState, setRoomState] = useState<CinemaRoomState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; level: 'info' | 'warning' | 'success' } | null>(null);
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
-  const [pingMs, setPingMs] = useState(16);
+  const [pingMs, setPingMs] = useState(18);
 
-  const socketRef = useRef<WebSocket | null>(null);
-  const pingIntervalRef = useRef<any>(null);
-  const pingTimestampRef = useRef<number>(0);
-  const lastAuthRef = useRef<{ mode: 'join' | 'create'; ipPort: string; password: string; roomName?: string; userName?: string; avatar?: string } | null>(null);
-  const fallbackTimeoutRef = useRef<any>(null);
+  const peerHeartbeatsRef = useRef<Map<string, number>>(new Map());
+  const cleanupTimerRef = useRef<any>(null);
+  const currentRoomStateRef = useRef<CinemaRoomState | null>(null);
+  const currentUserRef = useRef<Spectator | null>(null);
+
+  useEffect(() => {
+    currentRoomStateRef.current = roomState;
+  }, [roomState]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   const showToast = useCallback((text: string, level: 'info' | 'warning' | 'success' = 'info') => {
     setToastMessage({ text, level });
     setTimeout(() => {
       setToastMessage((prev) => (prev?.text === text ? null : prev));
-    }, 4000);
+    }, 3500);
   }, []);
 
-  // Handle incoming event from either WebSocket or PeerSync
-  const handleIncomingEvent = useCallback((data: SyncMessage) => {
-    switch (data.type) {
-      case 'PONG': {
-        if (data.timestamp) {
-          const latency = Math.max(5, Date.now() - data.timestamp);
-          setPingMs(latency);
+  // Handle packets from Universal Sync Engine (cross-device/network MQTT + BroadcastChannel)
+  const handleSyncPacket = useCallback((packet: SyncPacket) => {
+    const { type, payload, senderId, senderName, timestamp } = packet;
+
+    switch (type) {
+      case 'USER_PRESENCE': {
+        const user: Spectator = payload.user;
+        if (!user) return;
+
+        peerHeartbeatsRef.current.set(user.id, Date.now());
+
+        setRoomState((prev) => {
+          if (!prev) return null;
+
+          const exists = prev.spectators.some((s) => s.id === user.id);
+          let updatedSpectators = prev.spectators;
+
+          if (!exists) {
+            // Check capacity limit
+            if (prev.spectators.length >= prev.maxUsers) {
+              if (user.id === currentUserRef.current?.id) {
+                setError(`Sala Cheia! Limite máximo de ${prev.maxUsers} pessoas atingido.`);
+              }
+              return prev;
+            }
+
+            // Assign seat if duplicate
+            const takenSeats = new Set(prev.spectators.map((s) => s.seatIndex));
+            let seat = user.seatIndex;
+            if (takenSeats.has(seat)) {
+              for (let i = 0; i < prev.maxUsers; i++) {
+                if (!takenSeats.has(i)) {
+                  seat = i;
+                  break;
+                }
+              }
+            }
+            const newUser = { ...user, seatIndex: seat };
+            updatedSpectators = [...prev.spectators, newUser];
+
+            // If user was newly added, show notification and play sound
+            if (user.id !== currentUserRef.current?.id && !payload.isHeartbeat) {
+              cinemaAudio.playNotification();
+              showToast(`${user.name} entrou na sala! (Poltrona ${seat + 1})`, 'info');
+            }
+          } else {
+            // Update metadata
+            updatedSpectators = prev.spectators.map((s) =>
+              s.id === user.id ? { ...s, ping: payload.ping || s.ping, lastActive: Date.now() } : s
+            );
+          }
+
+          // If Host receives presence from new joiner, send current state snapshot
+          if (currentUserRef.current?.isAdmin && user.id !== currentUserRef.current.id && !payload.isHeartbeat) {
+            universalSync.publish('STATE_SNAPSHOT', {
+              targetUserId: user.id,
+              roomState: {
+                ...prev,
+                spectators: updatedSpectators,
+              },
+            });
+          }
+
+          return {
+            ...prev,
+            spectators: updatedSpectators,
+          };
+        });
+        break;
+      }
+
+      case 'REQUEST_INITIAL_STATE': {
+        if (currentUserRef.current?.isAdmin && currentRoomStateRef.current) {
+          universalSync.publish('STATE_SNAPSHOT', {
+            targetUserId: payload.requesterId,
+            roomState: currentRoomStateRef.current,
+          });
         }
         break;
       }
 
-      case 'ROOM_JOINED': {
-        if (data.currentUser) setCurrentUser(data.currentUser);
-        if (data.roomState) setRoomState(data.roomState);
-        setError(null);
-        cinemaAudio.playCinemaChime();
-        showToast(
-          data.currentUser ? `Bem-vindo! Poltrona ${data.currentUser.seatIndex + 1} reservada` : 'Sala sincronizada!',
-          'success'
-        );
-        break;
-      }
-
-      case 'SPECTATOR_JOINED': {
-        cinemaAudio.playNotification();
-        setRoomState((prev) => {
-          if (!prev) return data.roomState || null;
-          const exists = prev.spectators.some((s) => s.id === data.spectator.id);
-          const updatedSpectators = exists ? prev.spectators : [...prev.spectators, data.spectator];
-          return {
-            ...prev,
-            spectators: updatedSpectators,
-            messages: data.message ? [...prev.messages, data.message] : prev.messages,
-          };
-        });
-        showToast(`${data.spectator.name} entrou na sala!`, 'info');
-        break;
-      }
-
-      case 'SPECTATOR_LEFT': {
-        if (data.roomState) setRoomState(data.roomState);
-        if (data.message) showToast(`${data.userName} saiu da sala.`, 'info');
+      case 'STATE_SNAPSHOT': {
+        if (payload.targetUserId === currentUserRef.current?.id && payload.roomState) {
+          const snapshot: CinemaRoomState = payload.roomState;
+          setRoomState((prev) => {
+            if (!prev) return snapshot;
+            return {
+              ...snapshot,
+              // Keep own spectator in list
+              spectators: snapshot.spectators.some((s) => s.id === currentUserRef.current?.id)
+                ? snapshot.spectators
+                : [...snapshot.spectators, currentUserRef.current!],
+            };
+          });
+        }
         break;
       }
 
@@ -105,8 +163,8 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             videoState: {
               ...prev.videoState,
               isPlaying: true,
-              currentTime: data.currentTime,
-              updatedAt: data.updatedAt || Date.now(),
+              currentTime: payload.currentTime,
+              updatedAt: payload.updatedAt || timestamp,
             },
           };
         });
@@ -122,8 +180,8 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             videoState: {
               ...prev.videoState,
               isPlaying: false,
-              currentTime: data.currentTime,
-              updatedAt: data.updatedAt || Date.now(),
+              currentTime: payload.currentTime,
+              updatedAt: payload.updatedAt || timestamp,
             },
           };
         });
@@ -137,9 +195,9 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             ...prev,
             videoState: {
               ...prev.videoState,
-              currentTime: data.currentTime,
-              updatedAt: data.updatedAt || Date.now(),
-              isPlaying: data.isPlaying ?? prev.videoState.isPlaying,
+              currentTime: payload.currentTime,
+              updatedAt: payload.updatedAt || timestamp,
+              isPlaying: payload.isPlaying ?? prev.videoState.isPlaying,
             },
           };
         });
@@ -152,11 +210,11 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
           if (!prev) return null;
           return {
             ...prev,
-            videoState: data.videoState,
-            messages: data.message ? [...prev.messages, data.message] : prev.messages,
+            videoState: payload.videoState,
+            messages: payload.message ? [...prev.messages, payload.message] : prev.messages,
           };
         });
-        showToast(`Filme carregado: ${data.videoState.title}`, 'info');
+        showToast(`Filme carregado por ${senderName}: ${payload.videoState.title}`, 'info');
         break;
       }
 
@@ -167,11 +225,11 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             ...prev,
             videoState: {
               ...prev.videoState,
-              qualityPreset: data.qualityPreset,
+              qualityPreset: payload.qualityPreset,
             },
           };
         });
-        showToast(`Modo 4K: ${data.qualityPreset.toUpperCase()}`, 'info');
+        showToast(`Modo 4K: ${payload.qualityPreset.toUpperCase()}`, 'info');
         break;
       }
 
@@ -181,23 +239,23 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
           if (!prev) return null;
           return {
             ...prev,
-            messages: [...prev.messages, data.message],
+            messages: [...prev.messages, payload.message],
           };
         });
         break;
       }
 
       case 'REACTION_EMITTED': {
-        if (data.emoji === '🍿') cinemaAudio.playPopcorn();
-        else if (data.emoji === '👏') cinemaAudio.playApplause();
+        if (payload.emoji === '🍿') cinemaAudio.playPopcorn();
+        else if (payload.emoji === '👏') cinemaAudio.playApplause();
         else cinemaAudio.playPopcorn();
 
         const reaction: FloatingReaction = {
-          id: `rx-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          emoji: data.emoji,
-          userName: data.userName,
-          userId: data.userId,
-          seatIndex: data.seatIndex ?? 0,
+          id: `rx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          emoji: payload.emoji,
+          userName: senderName,
+          userId: senderId,
+          seatIndex: payload.seatIndex ?? 0,
           x: 10 + Math.random() * 80,
           timestamp: Date.now(),
         };
@@ -205,56 +263,60 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         setFloatingReactions((prev) => [...prev.slice(-15), reaction]);
         setTimeout(() => {
           setFloatingReactions((prev) => prev.filter((r) => r.id !== reaction.id));
-        }, 3500);
+        }, 3200);
         break;
       }
 
-      case 'ADMIN_TRANSFERRED': {
-        if (data.roomState) setRoomState(data.roomState);
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          return { ...prev, isAdmin: prev.id === data.newAdminId };
-        });
-        showToast(`Novo Host da Sala: ${data.newAdminName}`, 'info');
-        break;
-      }
-
-      case 'ANNOUNCEMENT_UPDATED': {
+      case 'USER_LEFT': {
         setRoomState((prev) => {
           if (!prev) return null;
-          return { ...prev, announcement: data.announcement };
+          return {
+            ...prev,
+            spectators: prev.spectators.filter((s) => s.id !== payload.userId),
+          };
         });
+        showToast(`${payload.userName} liberou a poltrona.`, 'info');
         break;
       }
 
-      case 'ADMIN_CONTROL_TOGGLED': {
-        setRoomState((prev) => {
-          if (!prev) return null;
-          return { ...prev, adminOnlyControl: data.adminOnlyControl };
-        });
-        showToast(
-          data.adminOnlyControl ? 'Controle exclusivo do Host ativado' : 'Controles liberados para todos',
-          'info'
-        );
-        break;
-      }
-
-      case 'KICKED': {
-        setError(data.message || 'Você foi removido da sala.');
-        setRoomState(null);
-        setCurrentUser(null);
-        lastAuthRef.current = null;
-        break;
-      }
-
-      case 'TOAST': {
-        showToast(data.message, data.level || 'info');
-        break;
-      }
-
-      case 'ERROR': {
-        setError(data.message);
-        showToast(data.message, 'warning');
+      case 'ADMIN_ACTION': {
+        const { action, targetUserId, value } = payload;
+        if (action === 'set_announcement') {
+          setRoomState((prev) => (prev ? { ...prev, announcement: value } : null));
+        } else if (action === 'toggle_admin_control') {
+          setRoomState((prev) => (prev ? { ...prev, adminOnlyControl: value } : null));
+          showToast(
+            value ? 'Controle exclusivo do Host ativado' : 'Controles liberados para todos os espectadores',
+            'info'
+          );
+        } else if (action === 'transfer_admin' && targetUserId) {
+          setRoomState((prev) => {
+            if (!prev) return null;
+            const target = prev.spectators.find((s) => s.id === targetUserId);
+            return {
+              ...prev,
+              adminId: targetUserId,
+              adminName: target?.name || 'Host',
+              spectators: prev.spectators.map((s) => ({
+                ...s,
+                isAdmin: s.id === targetUserId,
+              })),
+            };
+          });
+          if (targetUserId === currentUserRef.current?.id) {
+            setCurrentUser((prev) => (prev ? { ...prev, isAdmin: true } : null));
+            showToast('Você agora é o Administrador da Sala!', 'success');
+          }
+        } else if (action === 'kick' && targetUserId) {
+          if (targetUserId === currentUserRef.current?.id) {
+            setError('Você foi removido da sala pelo administrador.');
+            setRoomState(null);
+            setCurrentUser(null);
+            universalSync.disconnect();
+          } else {
+            setRoomState((prev) => (prev ? { ...prev, spectators: prev.spectators.filter((s) => s.id !== targetUserId) } : null));
+          }
+        }
         break;
       }
 
@@ -263,228 +325,211 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
     }
   }, [showToast]);
 
-  // Setup PeerSync listener
   useEffect(() => {
-    peerSync.setOnMessage((msg) => {
-      handleIncomingEvent(msg);
-    });
-  }, [handleIncomingEvent]);
+    universalSync.setPacketHandler(handleSyncPacket);
+  }, [handleSyncPacket]);
 
-  const connect = useCallback(() => {
-    if (socketRef.current && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    setIsConnecting(true);
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-    try {
-      const ws = new WebSocket(wsUrl);
-      socketRef.current = ws;
-
-      // Timeout for static hosts (like Netlify)
-      if (fallbackTimeoutRef.current) clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = setTimeout(() => {
-        if (ws.readyState !== WebSocket.OPEN) {
-          setIsP2PMode(true);
-          setIsConnecting(false);
-          setIsConnected(true);
-        }
-      }, 1500);
-
-      ws.onopen = () => {
-        if (fallbackTimeoutRef.current) clearTimeout(fallbackTimeoutRef.current);
-        setIsConnected(true);
-        setIsConnecting(false);
-        setIsP2PMode(false);
-        setError(null);
-
-        // Ping loop
-        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            pingTimestampRef.current = Date.now();
-            ws.send(JSON.stringify({ type: 'PING', timestamp: pingTimestampRef.current }));
-          }
-        }, 5000);
-
-        // Rejoin on reconnect
-        if (lastAuthRef.current) {
-          const auth = lastAuthRef.current;
-          if (auth.mode === 'create') {
-            ws.send(JSON.stringify({
-              type: 'CREATE_ROOM',
-              ipPort: auth.ipPort,
-              password: auth.password,
-              roomName: auth.roomName,
-              userName: auth.userName,
-              avatar: auth.avatar,
-            }));
-          } else {
-            ws.send(JSON.stringify({
-              type: 'JOIN_ROOM',
-              ipPort: auth.ipPort,
-              password: auth.password,
-              userName: auth.userName,
-              avatar: auth.avatar,
-            }));
-          }
-        }
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          handleIncomingEvent(data);
-        } catch (err) {
-          console.error('Error decoding WS message:', err);
-        }
-      };
-
-      ws.onerror = () => {
-        setIsP2PMode(true);
-        setIsConnecting(false);
-        setIsConnected(true);
-      };
-
-      ws.onclose = () => {
-        setIsConnected(false);
-        setIsConnecting(false);
-      };
-    } catch (e) {
-      setIsP2PMode(true);
-      setIsConnecting(false);
-      setIsConnected(true);
-    }
-  }, [handleIncomingEvent]);
-
+  // Periodic heartbeat cleanup for disconnected peers (> 9s without heartbeat)
   useEffect(() => {
-    connect();
+    cleanupTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      setRoomState((prev) => {
+        if (!prev) return null;
+        const active = prev.spectators.filter((s) => {
+          if (s.id === currentUserRef.current?.id) return true;
+          const last = peerHeartbeatsRef.current.get(s.id);
+          return last && now - last < 9000;
+        });
+
+        if (active.length !== prev.spectators.length) {
+          return { ...prev, spectators: active };
+        }
+        return prev;
+      });
+    }, 4000);
+
     return () => {
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (fallbackTimeoutRef.current) clearTimeout(fallbackTimeoutRef.current);
-      if (socketRef.current) socketRef.current.close();
+      if (cleanupTimerRef.current) clearInterval(cleanupTimerRef.current);
     };
-  }, [connect]);
-
-  // Unified send method (WebSocket or P2P/Broadcast)
-  const sendPayload = useCallback((payload: any) => {
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && !isP2PMode) {
-      socketRef.current.send(JSON.stringify(payload));
-    } else {
-      // P2P / PeerSync Engine
-      peerSync.broadcastMessage(payload);
-    }
-  }, [isP2PMode]);
-
-  const joinRoom = useCallback(
-    (ipPort: string, password: string, userName?: string, avatar?: string) => {
-      setError(null);
-      lastAuthRef.current = { mode: 'join', ipPort, password, userName, avatar };
-
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && !isP2PMode) {
-        socketRef.current.send(
-          JSON.stringify({
-            type: 'JOIN_ROOM',
-            ipPort,
-            password,
-            userName,
-            avatar,
-          })
-        );
-      } else {
-        // Fallback local/P2P instant join
-        const result = peerSync.joinRoomLocally(ipPort, password, userName, avatar);
-        if (result.error) {
-          setError(result.error);
-          showToast(result.error, 'warning');
-        } else if (result.user && result.room) {
-          setCurrentUser(result.user);
-          setRoomState(result.room);
-          cinemaAudio.playCinemaChime();
-          showToast(`Entrou na Sala! Poltrona ${result.user.seatIndex + 1} reservada`, 'success');
-        }
-      }
-    },
-    [isP2PMode, showToast]
-  );
+  }, []);
 
   const createRoom = useCallback(
     (ipPort: string, password: string, roomName?: string, userName?: string, avatar?: string) => {
       setError(null);
-      lastAuthRef.current = { mode: 'create', ipPort, password, roomName, userName, avatar };
+      setIsConnecting(true);
 
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && !isP2PMode) {
-        socketRef.current.send(
-          JSON.stringify({
-            type: 'CREATE_ROOM',
-            ipPort,
-            password,
-            roomName,
-            userName,
-            avatar,
-          })
-        );
-      } else {
-        // Fallback local/P2P instant room creation
-        const { user, room } = peerSync.createRoomLocally(ipPort, password, roomName, userName, avatar);
-        setCurrentUser(user);
-        setRoomState(room);
+      const hostUser: Spectator = {
+        id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: userName?.trim() || 'Admin Cineasta',
+        avatar: avatar || '🎬',
+        seatIndex: 0,
+        isAdmin: true,
+        isMuted: false,
+        ping: 15,
+        joinedAt: Date.now(),
+      };
+
+      const initialRoom: CinemaRoomState = {
+        ipPort,
+        roomName: roomName?.trim() || `Sala Cinema ${ipPort}`,
+        maxUsers: 5,
+        adminId: hostUser.id,
+        adminName: hostUser.name,
+        videoState: {
+          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+          title: 'Big Buck Bunny (Ultra HD 4K Remaster)',
+          isPlaying: false,
+          currentTime: 0,
+          updatedAt: Date.now(),
+          playbackRate: 1.0,
+          duration: 596,
+          qualityPreset: 'ultra_4k',
+          format: 'html5',
+        },
+        spectators: [hostUser],
+        messages: [
+          {
+            id: `msg-${Date.now()}`,
+            userId: 'system',
+            userName: 'Cinema',
+            avatar: '🎬',
+            text: `Sala de Cinema criada por ${hostUser.name}! (1/5 Poltronas ocupadas)`,
+            timestamp: Date.now(),
+            isSystem: true,
+          },
+        ],
+        announcement: '🍿 Bem-vindos à sessão de Cinema Ultra 4K!',
+        isLocked: false,
+        adminOnlyControl: true,
+      };
+
+      setCurrentUser(hostUser);
+      setRoomState(initialRoom);
+
+      // Save password and room reference locally
+      try {
+        const sanitized = universalSync.sanitizeRoomId(ipPort);
+        localStorage.setItem(`cineroom_${sanitized}_pwd`, password);
+      } catch (e) {}
+
+      // Connect to universal sync network
+      universalSync.connect(ipPort, hostUser, () => {
+        setIsConnecting(false);
+        setIsConnected(true);
         cinemaAudio.playCinemaChime();
         showToast('Sala de Cinema criada com sucesso! 🎬', 'success');
-      }
+      });
     },
-    [isP2PMode, showToast]
+    [showToast]
+  );
+
+  const joinRoom = useCallback(
+    (ipPort: string, password: string, userName?: string, avatar?: string) => {
+      setError(null);
+      setIsConnecting(true);
+
+      const sanitized = universalSync.sanitizeRoomId(ipPort);
+      const savedPwd = localStorage.getItem(`cineroom_${sanitized}_pwd`);
+      if (savedPwd && savedPwd !== password) {
+        setIsConnecting(false);
+        setError('Senha da porta incorreta! Verifique os dados digitados.');
+        showToast('Senha da porta incorreta!', 'warning');
+        return;
+      }
+
+      // Guest Spectator
+      const guestUser: Spectator = {
+        id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: userName?.trim() || `Espectador #${Math.floor(1 + Math.random() * 4)}`,
+        avatar: avatar || '🍿',
+        seatIndex: 1,
+        isAdmin: false,
+        isMuted: false,
+        ping: 22,
+        joinedAt: Date.now(),
+      };
+
+      const fallbackRoom: CinemaRoomState = {
+        ipPort,
+        roomName: `Sala Cinema ${ipPort}`,
+        maxUsers: 5,
+        adminId: '',
+        adminName: 'Admin',
+        videoState: {
+          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+          title: 'Big Buck Bunny (Ultra HD 4K Remaster)',
+          isPlaying: false,
+          currentTime: 0,
+          updatedAt: Date.now(),
+          playbackRate: 1.0,
+          duration: 596,
+          qualityPreset: 'ultra_4k',
+          format: 'html5',
+        },
+        spectators: [guestUser],
+        messages: [],
+        announcement: '🍿 Bem-vindos à sessão de Cinema Ultra 4K!',
+        isLocked: false,
+        adminOnlyControl: true,
+      };
+
+      setCurrentUser(guestUser);
+      setRoomState(fallbackRoom);
+
+      universalSync.connect(ipPort, guestUser, () => {
+        setIsConnecting(false);
+        setIsConnected(true);
+        cinemaAudio.playCinemaChime();
+        showToast('Conectado à Sala de Cinema! 🍿', 'success');
+      });
+    },
+    [showToast]
   );
 
   const playMedia = useCallback(
     (currentTime?: number) => {
       const now = Date.now();
-      const time = currentTime ?? (roomState?.videoState.currentTime || 0);
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: true, currentTime: time, updatedAt: now } } : null));
-      }
-      sendPayload({ type: 'MEDIA_PLAYED', currentTime: time, updatedAt: now, triggeredBy: currentUser?.name || 'Admin' });
+      const time = currentTime ?? (currentRoomStateRef.current?.videoState.currentTime || 0);
+
+      setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: true, currentTime: time, updatedAt: now } } : null));
+      universalSync.publish('MEDIA_PLAYED', { currentTime: time, updatedAt: now });
     },
-    [sendPayload, roomState, currentUser, isP2PMode]
+    []
   );
 
   const pauseMedia = useCallback(
     (currentTime?: number) => {
       const now = Date.now();
-      const time = currentTime ?? (roomState?.videoState.currentTime || 0);
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: false, currentTime: time, updatedAt: now } } : null));
-      }
-      sendPayload({ type: 'MEDIA_PAUSED', currentTime: time, updatedAt: now, triggeredBy: currentUser?.name || 'Admin' });
+      const time = currentTime ?? (currentRoomStateRef.current?.videoState.currentTime || 0);
+
+      setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, isPlaying: false, currentTime: time, updatedAt: now } } : null));
+      universalSync.publish('MEDIA_PAUSED', { currentTime: time, updatedAt: now });
     },
-    [sendPayload, roomState, currentUser, isP2PMode]
+    []
   );
 
   const seekMedia = useCallback(
     (time: number) => {
       const now = Date.now();
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, currentTime: time, updatedAt: now } } : null));
-      }
-      sendPayload({ type: 'MEDIA_SEEKED', currentTime: time, updatedAt: now, isPlaying: roomState?.videoState.isPlaying });
+      setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, currentTime: time, updatedAt: now } } : null));
+      universalSync.publish('MEDIA_SEEKED', { currentTime: time, updatedAt: now, isPlaying: currentRoomStateRef.current?.videoState.isPlaying });
     },
-    [sendPayload, roomState, isP2PMode]
+    []
   );
 
   const changeMedia = useCallback(
     (url: string, title?: string, duration?: number) => {
-      const newVideoState = {
-        url: url.trim(),
-        title: title?.trim() || 'Filme / Vídeo Ultra 4K',
+      const cleanUrl = url.trim();
+      const newVideoState: VideoState = {
+        url: cleanUrl,
+        title: title?.trim() || 'Filme / Transmissão Ultra 4K',
         isPlaying: false,
         currentTime: 0,
         updatedAt: Date.now(),
         playbackRate: 1.0,
         duration: duration || 0,
-        qualityPreset: roomState?.videoState.qualityPreset || 'ultra_4k',
-        format: (url.includes('.m3u8') ? 'hls' : url.includes('youtube.com') || url.includes('youtu.be') ? 'youtube' : 'html5') as any,
+        qualityPreset: currentRoomStateRef.current?.videoState.qualityPreset || 'ultra_4k',
+        format: (cleanUrl.includes('.m3u8') ? 'hls' : cleanUrl.includes('youtube.com') || cleanUrl.includes('youtu.be') ? 'youtube' : 'html5'),
       };
 
       const sysMsg: ChatMessage = {
@@ -492,130 +537,76 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         userId: 'system',
         userName: 'Cinema',
         avatar: '🎬',
-        text: `Novo vídeo carregado por ${currentUser?.name || 'Host'}: "${newVideoState.title}"`,
+        text: `Novo vídeo carregado por ${currentUserRef.current?.name || 'Admin'}: "${newVideoState.title}"`,
         timestamp: Date.now(),
         isSystem: true,
       };
 
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, videoState: newVideoState, messages: [...prev.messages, sysMsg] } : null));
-      }
-
-      sendPayload({
-        type: 'MEDIA_CHANGED',
-        videoState: newVideoState,
-        message: sysMsg,
-      });
+      setRoomState((prev) => (prev ? { ...prev, videoState: newVideoState, messages: [...prev.messages, sysMsg] } : null));
+      universalSync.publish('MEDIA_CHANGED', { videoState: newVideoState, message: sysMsg });
     },
-    [sendPayload, roomState, currentUser, isP2PMode]
+    []
   );
 
   const changeQuality = useCallback(
     (preset: QualityPreset) => {
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, qualityPreset: preset } } : null));
-      }
-      sendPayload({ type: 'QUALITY_CHANGED', qualityPreset: preset });
+      setRoomState((prev) => (prev ? { ...prev, videoState: { ...prev.videoState, qualityPreset: preset } } : null));
+      universalSync.publish('QUALITY_CHANGED', { qualityPreset: preset });
     },
-    [sendPayload, isP2PMode]
+    []
   );
 
   const sendMessage = useCallback(
     (text: string) => {
-      if (!currentUser) return;
+      if (!currentUserRef.current) return;
       const msg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        userId: currentUser.id,
-        userName: currentUser.name,
-        avatar: currentUser.avatar,
+        userId: currentUserRef.current.id,
+        userName: currentUserRef.current.name,
+        avatar: currentUserRef.current.avatar,
         text,
         timestamp: Date.now(),
       };
-      if (isP2PMode) {
-        setRoomState((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : null));
-      }
-      sendPayload({ type: 'NEW_MESSAGE', message: msg });
+      setRoomState((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : null));
+      universalSync.publish('NEW_MESSAGE', { message: msg });
     },
-    [sendPayload, currentUser, isP2PMode]
+    []
   );
 
   const sendReaction = useCallback(
     (emoji: string) => {
-      if (!currentUser) return;
-      sendPayload({
-        type: 'REACTION_EMITTED',
+      if (!currentUserRef.current) return;
+      universalSync.publish('REACTION_EMITTED', {
         emoji,
-        userName: currentUser.name,
-        userId: currentUser.id,
-        seatIndex: currentUser.seatIndex,
-        timestamp: Date.now(),
+        seatIndex: currentUserRef.current.seatIndex,
       });
     },
-    [sendPayload, currentUser]
+    []
   );
 
   const adminAction = useCallback(
     (action: 'kick' | 'transfer_admin' | 'set_announcement' | 'toggle_admin_control', targetUserId?: string, value?: any) => {
       if (action === 'set_announcement') {
-        if (isP2PMode) {
-          setRoomState((prev) => (prev ? { ...prev, announcement: value } : null));
-        }
-        sendPayload({ type: 'ANNOUNCEMENT_UPDATED', announcement: value });
+        setRoomState((prev) => (prev ? { ...prev, announcement: value } : null));
       } else if (action === 'toggle_admin_control') {
-        if (isP2PMode) {
-          setRoomState((prev) => (prev ? { ...prev, adminOnlyControl: value } : null));
-        }
-        sendPayload({ type: 'ADMIN_CONTROL_TOGGLED', adminOnlyControl: value });
-      } else if (action === 'transfer_admin' && targetUserId) {
-        const target = roomState?.spectators.find((s) => s.id === targetUserId);
-        if (target) {
-          sendPayload({
-            type: 'ADMIN_TRANSFERRED',
-            newAdminId: target.id,
-            newAdminName: target.name,
-            roomState: roomState ? {
-              ...roomState,
-              adminId: target.id,
-              adminName: target.name,
-              spectators: roomState.spectators.map((s) => ({
-                ...s,
-                isAdmin: s.id === target.id,
-              })),
-            } : null,
-          });
-        }
-      } else if (action === 'kick' && targetUserId) {
-        const target = roomState?.spectators.find((s) => s.id === targetUserId);
-        if (target) {
-          sendPayload({
-            type: 'SPECTATOR_LEFT',
-            userId: target.id,
-            userName: target.name,
-            roomState: roomState ? {
-              ...roomState,
-              spectators: roomState.spectators.filter((s) => s.id !== target.id),
-            } : null,
-          });
-        }
+        setRoomState((prev) => (prev ? { ...prev, adminOnlyControl: value } : null));
       }
+      universalSync.publish('ADMIN_ACTION', { action, targetUserId, value });
     },
-    [sendPayload, isP2PMode, roomState]
+    []
   );
 
   const leaveRoom = useCallback(() => {
-    lastAuthRef.current = null;
-    sendPayload({ type: 'LEAVE_ROOM' });
-    peerSync.cleanUp();
+    universalSync.disconnect();
     setRoomState(null);
     setCurrentUser(null);
-  }, [sendPayload]);
+  }, []);
 
   const clearError = useCallback(() => setError(null), []);
 
   return {
     isConnected,
     isConnecting,
-    isP2PMode,
     currentUser,
     roomState,
     error,

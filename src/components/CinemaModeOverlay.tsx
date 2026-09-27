@@ -190,22 +190,9 @@ export const CinemaModeOverlay: React.FC<CinemaModeOverlayProps> = ({
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('loadedmetadata', handleTimeUpdate);
 
-    const sampler = setInterval(() => {
-      if (video.paused || video.ended || !canvasRef.current) return;
-      try {
-        const ctx = canvasRef.current.getContext('2d');
-        if (ctx && video.videoWidth > 0) {
-          ctx.drawImage(video, 0, 0, 4, 4);
-          const pixel = ctx.getImageData(2, 2, 1, 1).data;
-          setAmbilightGlow(`rgba(${pixel[0]}, ${pixel[1]}, ${pixel[2]}, 0.5)`);
-        }
-      } catch (e) {}
-    }, 400);
-
     return () => {
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('loadedmetadata', handleTimeUpdate);
-      clearInterval(sampler);
     };
   }, [isOpen, duration]);
 
@@ -253,8 +240,6 @@ export const CinemaModeOverlay: React.FC<CinemaModeOverlayProps> = ({
         backgroundColor: `rgba(0, 0, 0, ${1 - ambientLight / 100 * 0.4})`,
       }}
     >
-      <canvas ref={canvasRef} width={4} height={4} className="hidden" />
-
       {/* Ambilight projection halo */}
       <div
         className="absolute inset-0 pointer-events-none transition-all duration-700 blur-3xl opacity-50 z-0"
@@ -393,9 +378,11 @@ export const CinemaModeOverlay: React.FC<CinemaModeOverlayProps> = ({
           <video
             ref={videoRef}
             playsInline
+            webkit-playsinline="true"
+            preload="auto"
             crossOrigin="anonymous"
             onClick={handleTogglePlay}
-            className="w-full h-full object-contain cursor-pointer"
+            className="w-full h-full object-contain cursor-pointer transition-transform duration-200"
           />
         )}
 
