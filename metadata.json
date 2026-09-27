@@ -1,0 +1,6 @@
+{
+  "name": "CineRoom Ultra 4K - Sala de Cinema Privada",
+  "description": "Sala de cinema privativa com IP da porta e senha, limite de 5 espectadores, sincronização em tempo real, reprodução em Ultra Qualidade e Modo Cinema Imersivo em tela cheia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
