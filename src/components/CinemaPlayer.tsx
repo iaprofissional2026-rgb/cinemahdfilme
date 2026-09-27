@@ -9,12 +9,10 @@ import {
   Maximize,
   Sparkles,
   Zap,
-  Sliders,
   Tv,
   Film,
-  Volume1,
-  RotateCcw,
   Gauge,
+  Radio,
 } from 'lucide-react';
 import { extractYouTubeId } from '../services/videoPresets';
 
@@ -54,8 +52,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   const [showControls, setShowControls] = useState<boolean>(true);
   const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
   const [isTurboMode, setIsTurboMode] = useState<boolean>(false);
+  const [needsUserGesture, setNeedsUserGesture] = useState<boolean>(false);
 
   const controlsTimeoutRef = useRef<any>(null);
+  const currentLoadedUrlRef = useRef<string>('');
 
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '00:00';
@@ -71,7 +71,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   // Source loader (HTML5 / HLS)
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !videoState.url) return;
+
+    if (currentLoadedUrlRef.current === videoState.url) return;
+    currentLoadedUrlRef.current = videoState.url;
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -90,13 +93,20 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (videoState.isPlaying) {
-          video.play().catch(() => {});
+          video.play().catch(() => {
+            setNeedsUserGesture(true);
+          });
         }
       });
       hlsRef.current = hls;
     } else {
       video.src = videoState.url;
       video.load();
+      if (videoState.isPlaying) {
+        video.play().catch(() => {
+          setNeedsUserGesture(true);
+        });
+      }
     }
 
     return () => {
@@ -105,7 +115,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
         hlsRef.current = null;
       }
     };
-  }, [videoState.url, videoState.format]);
+  }, [videoState.url, videoState.format, videoState.isPlaying]);
 
   // Sync playback state
   useEffect(() => {
@@ -115,17 +125,21 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     const serverNow = Date.now();
     const elapsedSinceUpdate = (serverNow - videoState.updatedAt) / 1000;
     const expectedTime = videoState.isPlaying
-      ? videoState.currentTime + (elapsedSinceUpdate > 0 && elapsedSinceUpdate < 30 ? elapsedSinceUpdate : 0)
+      ? videoState.currentTime + (elapsedSinceUpdate > 0 && elapsedSinceUpdate < 60 ? elapsedSinceUpdate : 0)
       : videoState.currentTime;
 
     const drift = Math.abs(video.currentTime - expectedTime);
-    if (drift > 1.2) {
+    if (drift > 1.5) {
       video.currentTime = Math.max(0, expectedTime);
     }
 
     if (videoState.isPlaying) {
       if (video.paused) {
-        video.play().catch(() => {});
+        video.play().then(() => {
+          setNeedsUserGesture(false);
+        }).catch(() => {
+          setNeedsUserGesture(true);
+        });
       }
     } else {
       if (!video.paused) {
@@ -145,7 +159,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     };
 
     const handleWaiting = () => setIsBuffering(true);
-    const handlePlaying = () => setIsBuffering(false);
+    const handlePlaying = () => {
+      setIsBuffering(false);
+      setNeedsUserGesture(false);
+    };
     const handleLoadedMetadata = () => {
       if (video.duration) setDuration(video.duration);
     };
@@ -164,12 +181,31 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
   }, [duration]);
 
   const handleTogglePlay = () => {
+    if (needsUserGesture) {
+      if (videoRef.current) {
+        videoRef.current.muted = false;
+        videoRef.current.play().then(() => {
+          setNeedsUserGesture(false);
+        }).catch(() => {});
+      }
+      return;
+    }
+
     if (!canControl) return;
     const time = videoRef.current ? videoRef.current.currentTime : localCurrentTime;
     if (videoState.isPlaying) {
       onPause(time);
     } else {
       onPlay(time);
+    }
+  };
+
+  const handleUserTapToSync = () => {
+    if (videoRef.current) {
+      videoRef.current.muted = false;
+      videoRef.current.play().then(() => {
+        setNeedsUserGesture(false);
+      }).catch(() => {});
     }
   };
 
@@ -195,22 +231,22 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     switch (preset) {
       case 'ultra_4k':
         return {
-          filter: 'contrast(1.08) saturate(1.12) brightness(1.02)',
+          filter: 'contrast(1.08) saturate(1.15) brightness(1.02)',
           transform: 'translate3d(0,0,0)',
         };
       case 'hdr_vibrant':
         return {
-          filter: 'contrast(1.15) saturate(1.25) brightness(1.04)',
+          filter: 'contrast(1.16) saturate(1.28) brightness(1.04)',
           transform: 'translate3d(0,0,0)',
         };
       case 'crisp_sharp':
         return {
-          filter: 'contrast(1.12) saturate(1.05)',
+          filter: 'contrast(1.12) saturate(1.08)',
           transform: 'translate3d(0,0,0)',
         };
       case 'cyberpunk':
         return {
-          filter: 'contrast(1.2) saturate(1.3) hue-rotate(6deg)',
+          filter: 'contrast(1.2) saturate(1.35) hue-rotate(6deg)',
           transform: 'translate3d(0,0,0)',
         };
       case 'original':
@@ -226,10 +262,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
     <div
       onMouseMove={handleUserActivity}
       onTouchStart={handleUserActivity}
-      className="relative w-full rounded-2xl md:rounded-3xl overflow-hidden bg-black shadow-2xl border border-slate-800 group select-none"
+      className="relative w-full rounded-2xl md:rounded-3xl overflow-hidden bg-black shadow-2xl border border-blue-900/40 group select-none"
     >
-      {/* Lightweight GPU-accelerated Ambilight Halo */}
-      <div className="absolute -inset-1 pointer-events-none transition-opacity duration-500 blur-2xl opacity-40 bg-gradient-to-tr from-rose-600/30 via-purple-600/20 to-amber-600/20 z-0" />
+      {/* Blue Gradient Ambilight Glow */}
+      <div className="absolute -inset-1 pointer-events-none transition-opacity duration-500 blur-2xl opacity-45 bg-gradient-to-tr from-blue-600/30 via-indigo-600/25 to-cyan-500/25 z-0" />
 
       {/* Top Header Overlay */}
       <div
@@ -238,18 +274,19 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
         }`}
       >
         <div className="flex items-center gap-2 overflow-hidden min-w-0">
-          <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-rose-600/30 border border-rose-500/40 flex items-center justify-center text-rose-400 flex-shrink-0">
+          <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 border border-blue-400/40 flex items-center justify-center text-white flex-shrink-0 shadow-md">
             <Film className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </div>
           <div className="truncate min-w-0">
-            <h2 className="text-xs sm:text-sm font-bold text-white tracking-wide truncate">
+            <h2 className="text-xs sm:text-sm font-black text-white tracking-wide truncate">
               {videoState.title || 'Filme em Exibição'}
             </h2>
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
-                ● SINCRONIZADO
+              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold flex items-center gap-1">
+                <Radio className="w-2.5 h-2.5 animate-pulse text-cyan-400" />
+                AO VIVO SINCRONIZADO
               </span>
-              <span className="text-[9px] font-mono text-slate-400 uppercase hidden xs:inline">
+              <span className="text-[9px] font-mono text-blue-300/80 uppercase hidden xs:inline">
                 {videoState.qualityPreset}
               </span>
             </div>
@@ -263,23 +300,23 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             onClick={() => setIsTurboMode((prev) => !prev)}
             className={`hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-[11px] font-bold transition-all ${
               isTurboMode
-                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
                 : 'bg-slate-900/80 border-slate-700 text-slate-400 hover:text-white'
             }`}
-            title="Modo Turbo: Máxima Fluidez 60FPS sem travamentos"
+            title="Modo Turbo: Máxima Fluidez 60FPS"
           >
-            <Gauge className="w-3.5 h-3.5 text-amber-400" />
+            <Gauge className="w-3.5 h-3.5 text-cyan-400" />
             <span>TURBO 60FPS</span>
           </button>
 
-          {/* BOTÃO DE CINEMA (Fullscreen / Landscape Mode) */}
+          {/* BOTÃO DE CINEMA (Blue Gradient) */}
           <button
             onClick={onOpenCinemaMode}
-            className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-xs font-black shadow-lg shadow-rose-950 transition-all transform active:scale-95 border border-rose-400/40"
-            title="Preencher tela e ativar Modo Cinema no celular ou notebook"
+            className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white text-xs font-black shadow-lg shadow-blue-950 transition-all transform active:scale-95 border border-cyan-400/40"
+            title="Preencher tela e ativar Modo Cinema"
           >
             <Tv className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            <span className="tracking-wide">MODO CINEMA</span>
+            <span className="tracking-wide font-sans">MODO CINEMA</span>
           </button>
         </div>
       </div>
@@ -295,14 +332,14 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             <span className="text-3xl sm:text-5xl filter drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)]">
               {rx.emoji}
             </span>
-            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-black/80 text-rose-300 border border-rose-500/40 mt-1 whitespace-nowrap">
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-950/90 text-cyan-300 border border-cyan-500/40 mt-1 whitespace-nowrap shadow-lg">
               {rx.userName}
             </span>
           </div>
         ))}
       </div>
 
-      {/* Video Viewport with Aspect-Ratio */}
+      {/* Video Viewport */}
       <div className="relative aspect-video w-full flex items-center justify-center bg-black z-10">
         {isYouTube && youtubeId ? (
           <iframe
@@ -327,35 +364,53 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
           />
         )}
 
-        {/* Buffering Indicator */}
-        {isBuffering && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-20 pointer-events-none">
-            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-3 border-rose-500 border-t-transparent animate-spin mb-2" />
-            <p className="text-[11px] font-mono text-rose-300 font-bold uppercase tracking-widest animate-pulse">
-              Carregando Ultra 4K...
+        {/* Autoplay blocked resolver banner */}
+        {needsUserGesture && (
+          <div
+            onClick={handleUserTapToSync}
+            className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm z-30 cursor-pointer p-4 text-center animate-fadeIn"
+          >
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white text-2xl shadow-xl shadow-blue-950/80 mb-3 animate-bounce">
+              <Play className="w-8 h-8 fill-current ml-1" />
+            </div>
+            <h3 className="text-sm sm:text-base font-black text-white">
+              O Host iniciou o filme!
+            </h3>
+            <p className="text-xs text-cyan-300 mt-1">
+              Toque aqui para desmutar e sincronizar em Ultra Qualidade
             </p>
           </div>
         )}
 
-        {/* Big Center Play/Pause Button */}
-        {!videoState.isPlaying && !isYouTube && (
+        {/* Buffering Indicator */}
+        {isBuffering && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-20 pointer-events-none">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-3 border-cyan-400 border-t-transparent animate-spin mb-2" />
+            <p className="text-[11px] font-mono text-cyan-300 font-bold uppercase tracking-widest animate-pulse">
+              Buffer Ultra 4K...
+            </p>
+          </div>
+        )}
+
+        {/* Center Play Button when paused */}
+        {!videoState.isPlaying && !isYouTube && !needsUserGesture && (
           <button
             onClick={handleTogglePlay}
             disabled={!canControl}
-            className="absolute inset-0 m-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white flex items-center justify-center shadow-2xl shadow-rose-950 border-2 border-white/40 transition-transform transform hover:scale-110 active:scale-95 z-20"
+            className="absolute inset-0 m-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 text-white flex items-center justify-center shadow-2xl shadow-blue-950 border-2 border-white/50 transition-transform transform hover:scale-110 active:scale-95 z-20"
           >
             <Play className="w-8 h-8 sm:w-9 sm:h-9 fill-current ml-1" />
           </button>
         )}
       </div>
 
-      {/* Bottom Controls Bar */}
+      {/* Bottom Controls Bar (Blue Gradient Style) */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-30 p-2.5 sm:p-4 bg-gradient-to-t from-black via-black/80 to-transparent transition-opacity duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-30 p-2.5 sm:p-4 bg-gradient-to-t from-black via-black/85 to-transparent transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        {/* Progress Bar */}
+        {/* Progress Bar with Blue Gradient */}
         <div className="relative mb-2 sm:mb-3 flex items-center group/bar">
           <input
             type="range"
@@ -365,10 +420,10 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
             value={localCurrentTime}
             onChange={handleSeekChange}
             disabled={!canControl}
-            className="w-full h-2 sm:h-1.5 bg-slate-700/80 rounded-lg appearance-none cursor-pointer accent-rose-500 focus:outline-none"
+            className="w-full h-2 sm:h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
           />
           <div
-            className="absolute top-0 left-0 h-2 sm:h-1.5 rounded-lg bg-gradient-to-r from-rose-600 to-red-500 pointer-events-none"
+            className="absolute top-0 left-0 h-2 sm:h-1.5 rounded-lg bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400 pointer-events-none"
             style={{ width: `${(localCurrentTime / (duration || 1)) * 100}%` }}
           />
         </div>
@@ -382,7 +437,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
               disabled={!canControl}
               className={`p-2 rounded-xl text-white transition-all ${
                 canControl
-                  ? 'bg-rose-600 hover:bg-rose-500 shadow-md shadow-rose-950'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md shadow-blue-950'
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed'
               }`}
               title={canControl ? (videoState.isPlaying ? 'Pausar' : 'Reproduzir') : 'Apenas o Host pode controlar'}
@@ -392,7 +447,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
 
             {/* Timestamps */}
             <div className="text-[11px] sm:text-xs font-mono text-slate-300">
-              <span className="text-white font-bold">{formatTime(localCurrentTime)}</span>
+              <span className="text-cyan-300 font-bold">{formatTime(localCurrentTime)}</span>
               <span className="text-slate-500 mx-1">/</span>
               <span>{formatTime(duration)}</span>
             </div>
@@ -409,9 +464,9 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
                 className="text-slate-300 hover:text-white p-1"
               >
                 {isMuted || volume === 0 ? (
-                  <VolumeX className="w-4 h-4 text-rose-400" />
+                  <VolumeX className="w-4 h-4 text-cyan-400" />
                 ) : (
-                  <Volume2 className="w-4 h-4" />
+                  <Volume2 className="w-4 h-4 text-cyan-300" />
                 )}
               </button>
               <input
@@ -429,7 +484,7 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
                   }
                   setIsMuted(false);
                 }}
-                className="w-14 sm:w-20 h-1 bg-slate-700 rounded-lg appearance-none accent-rose-500 cursor-pointer hidden xs:inline-block"
+                className="w-14 sm:w-20 h-1 bg-slate-700 rounded-lg appearance-none accent-cyan-400 cursor-pointer hidden xs:inline-block"
               />
             </div>
           </div>
@@ -437,14 +492,14 @@ export const CinemaPlayer: React.FC<CinemaPlayerProps> = ({
           {/* Right Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2">
             {!canControl && (
-              <span className="text-[10px] font-medium text-amber-300/90 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 hidden sm:inline">
+              <span className="text-[10px] font-medium text-cyan-300/90 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20 hidden sm:inline">
                 Sincronizado com o Host
               </span>
             )}
 
             <button
               onClick={onOpenCinemaMode}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white transition-all"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white transition-all"
               title="Modo Cinema Tela Cheia"
             >
               <Maximize className="w-4 h-4" />

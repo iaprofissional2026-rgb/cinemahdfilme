@@ -18,7 +18,6 @@ import {
   LogOut,
   Volume2,
   VolumeX,
-  Wifi,
   Crown,
   Share2,
   Sparkles,
@@ -86,7 +85,7 @@ export default function App() {
   const canControl = !roomState.adminOnlyControl || isAdmin;
 
   return (
-    <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col selection:bg-rose-600 selection:text-white pb-16">
+    <div className="min-h-screen bg-[#050814] text-slate-100 flex flex-col selection:bg-cyan-500 selection:text-slate-950 pb-16">
       {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed top-4 right-4 z-[9999] max-w-sm animate-fadeIn">
@@ -96,21 +95,21 @@ export default function App() {
                 ? 'bg-amber-950/95 border-amber-500/50 text-amber-200'
                 : toastMessage.level === 'success'
                 ? 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200'
-                : 'bg-slate-900/95 border-rose-500/40 text-slate-100 shadow-rose-950/50'
+                : 'bg-slate-900/95 border-blue-500/50 text-cyan-200 shadow-blue-950/70'
             }`}
           >
-            <Sparkles className="w-4 h-4 text-rose-400 flex-shrink-0" />
+            <Sparkles className="w-4 h-4 text-cyan-400 flex-shrink-0" />
             <span className="truncate">{toastMessage.text}</span>
           </div>
         </div>
       )}
 
-      {/* Top Header Bar */}
-      <header className="sticky top-0 z-40 bg-slate-950/90 border-b border-slate-800/90 backdrop-blur-xl px-3 sm:px-6 py-2.5">
+      {/* Top Header Bar (Blue Gradient Style) */}
+      <header className="sticky top-0 z-40 bg-slate-950/90 border-b border-blue-900/50 backdrop-blur-xl px-3 sm:px-6 py-2.5">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
           {/* Logo & IP */}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-600 flex items-center justify-center text-white shadow-lg shadow-rose-950 font-black text-base sm:text-lg flex-shrink-0">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 flex items-center justify-center text-white shadow-lg shadow-blue-950 font-black text-base sm:text-lg flex-shrink-0 border border-cyan-400/40">
               🎬
             </div>
             <div className="min-w-0">
@@ -119,14 +118,14 @@ export default function App() {
                   {roomState.roomName || 'CineRoom 4K'}
                 </h1>
                 {isAdmin && (
-                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded-full bg-amber-500 text-black flex items-center gap-0.5">
+                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded-full bg-cyan-400 text-slate-950 flex items-center gap-0.5">
                     <Crown className="w-2 h-2 fill-current" />
                     HOST
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
-                <span className="text-rose-400 font-bold truncate">IP: {roomState.ipPort}</span>
+                <span className="text-cyan-400 font-bold truncate">IP: {roomState.ipPort}</span>
                 <span>•</span>
                 <span className="text-slate-300 whitespace-nowrap">
                   {roomState.spectators.length}/5 VIP
@@ -140,26 +139,26 @@ export default function App() {
             {/* Share IP */}
             <button
               onClick={handleCopyQuickLink}
-              className="p-2 sm:px-3 sm:py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 transition-all flex items-center gap-1"
+              className="p-2 sm:px-3 sm:py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-blue-900/60 text-xs font-semibold text-cyan-300 transition-all flex items-center gap-1"
               title="Copiar dados da sala"
             >
-              <Share2 className="w-3.5 h-3.5 text-rose-400" />
+              <Share2 className="w-3.5 h-3.5 text-cyan-400" />
               <span className="hidden sm:inline">{copiedLink ? 'Copiado!' : 'Compartilhar'}</span>
             </button>
 
             {/* Sound FX */}
             <button
               onClick={toggleSoundFx}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white"
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-blue-900/60 text-slate-300 hover:text-white"
               title={isAudioMuted ? 'Ativar Sons' : 'Silenciar'}
             >
-              {isAudioMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+              {isAudioMuted ? <VolumeX className="w-4 h-4 text-cyan-400" /> : <Volume2 className="w-4 h-4 text-cyan-300" />}
             </button>
 
-            {/* BOTÃO DE CINEMA */}
+            {/* BOTÃO DE CINEMA (Blue Gradient) */}
             <button
               onClick={() => setIsCinemaModeOpen(true)}
-              className="flex items-center gap-1 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs sm:text-sm shadow-lg shadow-rose-950 transition-all active:scale-95 border border-rose-400/40"
+              className="flex items-center gap-1.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-black text-xs sm:text-sm shadow-lg shadow-blue-950 transition-all active:scale-95 border border-cyan-400/40"
               title="Preencher tela e ativar Modo Cinema no celular ou notebook"
             >
               <Tv className="w-4 h-4" />
@@ -169,7 +168,7 @@ export default function App() {
             {/* Leave */}
             <button
               onClick={leaveRoom}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-rose-950/60 border border-slate-800 text-slate-400 hover:text-rose-300"
+              className="p-2 rounded-xl bg-slate-900 hover:bg-red-950/60 border border-blue-900/60 text-slate-400 hover:text-red-300"
               title="Sair da Sala"
             >
               <LogOut className="w-4 h-4" />
@@ -178,14 +177,14 @@ export default function App() {
         </div>
       </header>
 
-      {/* Mobile Tab Navigation (< lg screens) */}
-      <div className="lg:hidden sticky top-[57px] z-30 bg-slate-950/95 border-b border-slate-800 px-3 py-1.5 backdrop-blur-lg">
+      {/* Mobile Tab Navigation */}
+      <div className="lg:hidden sticky top-[57px] z-30 bg-slate-950/95 border-b border-blue-900/50 px-3 py-1.5 backdrop-blur-lg">
         <div className="grid grid-cols-4 gap-1">
           <button
             onClick={() => setMobileTab('player')}
             className={`py-1.5 rounded-lg text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 ${
               mobileTab === 'player'
-                ? 'bg-rose-600 text-white shadow'
+                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow'
                 : 'text-slate-400 hover:text-white bg-slate-900/60'
             }`}
           >
@@ -196,7 +195,7 @@ export default function App() {
             onClick={() => setMobileTab('panel')}
             className={`py-1.5 rounded-lg text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 ${
               mobileTab === 'panel'
-                ? 'bg-rose-600 text-white shadow'
+                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow'
                 : 'text-slate-400 hover:text-white bg-slate-900/60'
             }`}
           >
@@ -207,7 +206,7 @@ export default function App() {
             onClick={() => setMobileTab('chat')}
             className={`py-1.5 rounded-lg text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               mobileTab === 'chat'
-                ? 'bg-rose-600 text-white shadow'
+                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow'
                 : 'text-slate-400 hover:text-white bg-slate-900/60'
             }`}
           >
@@ -218,19 +217,19 @@ export default function App() {
             onClick={() => setMobileTab('seats')}
             className={`py-1.5 rounded-lg text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 ${
               mobileTab === 'seats'
-                ? 'bg-rose-600 text-white shadow'
+                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow'
                 : 'text-slate-400 hover:text-white bg-slate-900/60'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
-            <span>Poltronas ({roomState.spectators.length}/5)</span>
+            <span>VIP ({roomState.spectators.length}/5)</span>
           </button>
         </div>
       </div>
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-3 sm:px-6 mt-4 sm:mt-6 space-y-6 flex-1 w-full">
-        {/* Desktop Layout (>= lg) */}
+        {/* Desktop Layout */}
         <div className="hidden lg:grid grid-cols-3 gap-6">
           <div className="col-span-2 space-y-4">
             <CinemaPlayer
@@ -262,7 +261,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Mobile Layout (< lg) Based on Selected Tab */}
+        {/* Mobile Layout */}
         <div className="lg:hidden space-y-4">
           {mobileTab === 'player' && (
             <div className="space-y-4">
@@ -318,25 +317,6 @@ export default function App() {
                 currentUserId={currentUser.id}
                 maxSeats={roomState.maxUsers || 5}
               />
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-2">
-                  Espectadores Conectados ({roomState.spectators.length}/5)
-                </h3>
-                <div className="space-y-2">
-                  {roomState.spectators.map((s) => (
-                    <div key={s.id} className="flex items-center justify-between p-2 rounded-xl bg-slate-950 border border-slate-800">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">{s.avatar}</span>
-                        <div>
-                          <p className="text-xs font-bold text-white">{s.name} {s.id === currentUser.id && '(Você)'}</p>
-                          <p className="text-[10px] text-slate-400 font-mono">Poltrona {s.seatIndex + 1} {s.isAdmin && '• Host'}</p>
-                        </div>
-                      </div>
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
         </div>

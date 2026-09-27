@@ -34,10 +34,11 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
   const [error, setError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; level: 'info' | 'warning' | 'success' } | null>(null);
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
-  const [pingMs, setPingMs] = useState(18);
+  const [pingMs, setPingMs] = useState(15);
 
   const peerHeartbeatsRef = useRef<Map<string, number>>(new Map());
   const cleanupTimerRef = useRef<any>(null);
+  const hostPulseTimerRef = useRef<any>(null);
   const currentRoomStateRef = useRef<CinemaRoomState | null>(null);
   const currentUserRef = useRef<Spectator | null>(null);
 
@@ -56,7 +57,30 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
     }, 3500);
   }, []);
 
-  // Handle packets from Universal Sync Engine (cross-device/network MQTT + BroadcastChannel)
+  // Periodic Host Pulse broadcasting current video & playback to ensure guests never miss anything
+  useEffect(() => {
+    if (currentUser?.isAdmin) {
+      if (hostPulseTimerRef.current) clearInterval(hostPulseTimerRef.current);
+      hostPulseTimerRef.current = setInterval(() => {
+        if (currentRoomStateRef.current) {
+          universalSync.publish('SYNC_PULSE', {
+            videoState: currentRoomStateRef.current.videoState,
+            announcement: currentRoomStateRef.current.announcement,
+            adminOnlyControl: currentRoomStateRef.current.adminOnlyControl,
+            roomName: currentRoomStateRef.current.roomName,
+          });
+        }
+      }, 2500);
+    } else {
+      if (hostPulseTimerRef.current) clearInterval(hostPulseTimerRef.current);
+    }
+
+    return () => {
+      if (hostPulseTimerRef.current) clearInterval(hostPulseTimerRef.current);
+    };
+  }, [currentUser?.isAdmin]);
+
+  // Handle incoming packets
   const handleSyncPacket = useCallback((packet: SyncPacket) => {
     const { type, payload, senderId, senderName, timestamp } = packet;
 
@@ -74,7 +98,6 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
           let updatedSpectators = prev.spectators;
 
           if (!exists) {
-            // Check capacity limit
             if (prev.spectators.length >= prev.maxUsers) {
               if (user.id === currentUserRef.current?.id) {
                 setError(`Sala Cheia! Limite máximo de ${prev.maxUsers} pessoas atingido.`);
@@ -82,7 +105,6 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
               return prev;
             }
 
-            // Assign seat if duplicate
             const takenSeats = new Set(prev.spectators.map((s) => s.seatIndex));
             let seat = user.seatIndex;
             if (takenSeats.has(seat)) {
@@ -96,15 +118,13 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             const newUser = { ...user, seatIndex: seat };
             updatedSpectators = [...prev.spectators, newUser];
 
-            // If user was newly added, show notification and play sound
             if (user.id !== currentUserRef.current?.id && !payload.isHeartbeat) {
               cinemaAudio.playNotification();
               showToast(`${user.name} entrou na sala! (Poltrona ${seat + 1})`, 'info');
             }
           } else {
-            // Update metadata
             updatedSpectators = prev.spectators.map((s) =>
-              s.id === user.id ? { ...s, ping: payload.ping || s.ping, lastActive: Date.now() } : s
+              s.id === user.id ? { ...s, ping: payload.ping || s.ping } : s
             );
           }
 
@@ -144,10 +164,36 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             if (!prev) return snapshot;
             return {
               ...snapshot,
-              // Keep own spectator in list
               spectators: snapshot.spectators.some((s) => s.id === currentUserRef.current?.id)
                 ? snapshot.spectators
                 : [...snapshot.spectators, currentUserRef.current!],
+            };
+          });
+        }
+        break;
+      }
+
+      case 'SYNC_PULSE': {
+        // Periodic sync pulse from host
+        if (!currentUserRef.current?.isAdmin && payload.videoState) {
+          setRoomState((prev) => {
+            if (!prev) return null;
+            // If movie URL is different, update immediately!
+            const urlChanged = prev.videoState.url !== payload.videoState.url;
+            return {
+              ...prev,
+              videoState: {
+                ...prev.videoState,
+                url: payload.videoState.url,
+                title: payload.videoState.title,
+                isPlaying: payload.videoState.isPlaying,
+                currentTime: payload.videoState.currentTime,
+                updatedAt: payload.videoState.updatedAt || Date.now(),
+                duration: payload.videoState.duration,
+                format: payload.videoState.format,
+              },
+              announcement: payload.announcement ?? prev.announcement,
+              adminOnlyControl: payload.adminOnlyControl ?? prev.adminOnlyControl,
             };
           });
         }
@@ -214,7 +260,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             messages: payload.message ? [...prev.messages, payload.message] : prev.messages,
           };
         });
-        showToast(`Filme carregado por ${senderName}: ${payload.videoState.title}`, 'info');
+        showToast(`Novo filme carregado: ${payload.videoState.title}`, 'info');
         break;
       }
 
@@ -229,7 +275,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
             },
           };
         });
-        showToast(`Modo 4K: ${payload.qualityPreset.toUpperCase()}`, 'info');
+        showToast(`Modo Ultra 4K: ${payload.qualityPreset.toUpperCase()}`, 'info');
         break;
       }
 
@@ -329,7 +375,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
     universalSync.setPacketHandler(handleSyncPacket);
   }, [handleSyncPacket]);
 
-  // Periodic heartbeat cleanup for disconnected peers (> 9s without heartbeat)
+  // Periodic heartbeat cleanup for disconnected peers (> 9s)
   useEffect(() => {
     cleanupTimerRef.current = setInterval(() => {
       const now = Date.now();
@@ -360,7 +406,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
 
       const hostUser: Spectator = {
         id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        name: userName?.trim() || 'Admin Cineasta',
+        name: userName?.trim() || 'Host Cineasta',
         avatar: avatar || '🎬',
         seatIndex: 0,
         isAdmin: true,
@@ -406,13 +452,11 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
       setCurrentUser(hostUser);
       setRoomState(initialRoom);
 
-      // Save password and room reference locally
       try {
         const sanitized = universalSync.sanitizeRoomId(ipPort);
         localStorage.setItem(`cineroom_${sanitized}_pwd`, password);
       } catch (e) {}
 
-      // Connect to universal sync network
       universalSync.connect(ipPort, hostUser, () => {
         setIsConnecting(false);
         setIsConnected(true);
@@ -437,7 +481,6 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         return;
       }
 
-      // Guest Spectator
       const guestUser: Spectator = {
         id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         name: userName?.trim() || `Espectador #${Math.floor(1 + Math.random() * 4)}`,
@@ -445,7 +488,7 @@ export function useCinemaSocket(): UseCinemaSocketReturn {
         seatIndex: 1,
         isAdmin: false,
         isMuted: false,
-        ping: 22,
+        ping: 20,
         joinedAt: Date.now(),
       };
 
